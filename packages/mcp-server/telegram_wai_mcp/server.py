@@ -1218,14 +1218,16 @@ async def list_tools() -> list[Tool]:
             name="send_message",
             description=(
                 "Send a text message to a Telegram chat as the connected user account. "
-                "Requires a chat_id — get it from list_chats or search_messages results."
+                'Use chat_id="me" to send to your own Saved Messages (Избранное); no chat lookup needed. '
+                "For another chat, get its ID from list_chats or search_messages. "
+                "Saved Messages preserves literal text, up to 4096 characters; send longer text as a file."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "chat_id": {
                         "type": "string",
-                        "description": "The chat ID to send the message to",
+                        "description": 'Use "me" for Saved Messages, or the internal chat UUID for another chat',
                     },
                     "text": {
                         "type": "string",
@@ -1239,6 +1241,7 @@ async def list_tools() -> list[Tool]:
             name="send_file",
             description=(
                 "Download a file from a URL and send it to a Telegram chat as the connected user account. "
+                'Use chat_id="me" for Saved Messages (Избранное), preserving the original as a document. '
                 "Supports any file type (PDF, images, documents, etc.). "
                 "The file is downloaded server-side and sent via Telegram. "
                 "To pass on a file from another chat, use the media_download_url from get_files or "
@@ -1251,7 +1254,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "chat_id": {
                         "type": "string",
-                        "description": "The chat ID to send the file to",
+                        "description": 'Use "me" for Saved Messages, or the internal chat UUID for another chat',
                     },
                     "file_url": {
                         "type": "string",
@@ -1972,6 +1975,8 @@ def format_send_result(result: dict, action: str) -> list[TextContent]:
         f"Message ID: {msg_id}",
         f"Chat ID: {chat_id}",
     ]
+    if chat_id == "me":
+        lines.append("Destination: Saved Messages (Избранное) of the connected account")
     file_name = result.get("file_name")
     if file_name:
         lines.append(f"File: {file_name}")

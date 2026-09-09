@@ -26,3 +26,8 @@ class SendFileResponse(BaseModel):
     telegram_message_id: int
     chat_id: str
     file_name: str | None = None
+
+
+class SavedFileResponse(SendFileResponse):
+    file_size: int
+    sha256: str

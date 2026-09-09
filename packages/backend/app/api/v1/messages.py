@@ -1,7 +1,8 @@
 from typing import Annotated
+from urllib.parse import unquote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import RequireWrite
@@ -9,15 +10,18 @@ from app.core.database import get_db
 from app.core.limiter import limiter
 from app.schemas.messaging import (
     ReplyMessageRequest,
+    SavedFileResponse,
     SendFileRequest,
     SendFileResponse,
     SendMessageRequest,
     SendMessageResponse,
 )
 from app.services.messaging_service import (
+    SendTarget,
     reply_to_message,
     send_file,
     send_message,
+    upload_to_saved_messages,
 )
 
 router = APIRouter()
@@ -27,7 +31,7 @@ router = APIRouter()
 @limiter.limit("20/minute")
 async def send_message_endpoint(
     request: Request,
-    chat_id: UUID,
+    chat_id: SendTarget,
     body: SendMessageRequest,
     ctx: RequireWrite,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -44,7 +48,7 @@ async def send_message_endpoint(
 @limiter.limit("10/minute")
 async def send_file_endpoint(
     request: Request,
-    chat_id: UUID,
+    chat_id: SendTarget,
     body: SendFileRequest,
     ctx: RequireWrite,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -57,6 +61,33 @@ async def send_file_endpoint(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return SendFileResponse(**result)
+
+
+@router.post("/me/upload", response_model=SavedFileResponse)
+@limiter.limit("10/minute")
+async def upload_saved_file_endpoint(
+    request: Request,
+    ctx: RequireWrite,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    file_name: Annotated[
+        str, Header(alias="X-File-Name", min_length=1, max_length=2048)
+    ],
+    caption: Annotated[
+        str | None, Header(alias="X-Telegram-Caption", max_length=16384)
+    ] = None,
+) -> SavedFileResponse:
+    """Send raw file bytes to Saved Messages. Header values are percent-encoded UTF-8."""
+    try:
+        result = await upload_to_saved_messages(
+            db,
+            ctx.user.id,
+            request.stream(),
+            unquote(file_name),
+            unquote(caption) if caption else None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return SavedFileResponse(**result)
 
 
 @router.post("/{chat_id}/reply", response_model=SendMessageResponse)

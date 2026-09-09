@@ -1,0 +1,4 @@
+interface:
+  display_name: "Отправить себе в Telegram"
+  short_description: "Текст, ссылки и оригиналы файлов в Избранное"
+  default_prompt: "Отправь выбранный материал в моё Избранное Telegram."
