@@ -1,0 +1,28 @@
+{
+  "name": "wai-telegram",
+  "version": "0.2.0",
+  "description": "Поиск, контекст, незавершённые разговоры и отправка текста и файлов себе в Telegram.",
+  "author": {
+    "name": "Mik Wiseman"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Wai Telegram",
+    "shortDescription": "Найти. Вспомнить. Ответить. Сохранить себе.",
+    "longDescription": "Четыре скилла через Wai Telegram MCP: поиск сообщений и материалов, восстановление договорённостей, разбор незавершённых разговоров и отправка текста и файлов в Избранное. Работает с подключённым аккаунтом; запись и отправка — по поручению пользователя.",
+    "developerName": "WaiWai",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://telegram.waiwai.is",
+    "defaultPrompt": [
+      "Кому я не ответил и что у меня зависло в Telegram?",
+      "Подготовь меня к встрече: договорённости и открытые вопросы.",
+      "Найди переписку или файл, который я не могу вспомнить.",
+      "Отправь этот файл и короткое резюме мне в Избранное Telegram."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

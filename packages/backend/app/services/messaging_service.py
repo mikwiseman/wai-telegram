@@ -1,10 +1,12 @@
-import ipaddress
 import asyncio
+import hashlib
+import ipaddress
 import logging
 import socket
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import NoReturn
+from typing import Literal, NoReturn
 from urllib.parse import urljoin, urlparse
 from uuid import UUID
 
@@ -23,6 +25,7 @@ from telethon.tl.types import (
     Chat,
     InputPeerChannel,
     InputPeerChat,
+    InputPeerSelf,
     InputPeerUser,
     User as TelegramUser,
 )
@@ -42,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _MAX_DOWNLOAD_REDIRECTS = 5
+SendTarget = UUID | Literal["me"]
 
 
 class TelegramEntityNotFoundError(ValueError):
@@ -230,15 +234,26 @@ def _handle_telethon_error(e: Exception) -> NoReturn:
 async def send_message(
     db: AsyncSession,
     user_id: UUID,
-    chat_id: UUID,
+    chat_id: SendTarget,
     text: str,
 ) -> dict:
     """Send a text message to a Telegram chat via user's Telethon client."""
-    chat = await _get_chat(db, user_id, chat_id)
+    if chat_id == "me" and (
+        not text.strip() or len(text.encode("utf-16-le")) // 2 > 4096
+    ):
+        raise ValueError(
+            "Saved Messages text must contain 1–4096 characters; upload longer text as a file"
+        )
+    chat = None if chat_id == "me" else await _get_chat(db, user_id, chat_id)
     client = await get_client(user_id, db)
     try:
-        entity = await _resolve_chat_entity(client, db, chat)
-        result = await client.send_message(entity, text)
+        entity = (
+            InputPeerSelf()
+            if chat_id == "me"
+            else await _resolve_chat_entity(client, db, chat)
+        )
+        options = {"parse_mode": None} if chat_id == "me" else {}
+        result = await client.send_message(entity, text, **options)
         return {
             "telegram_message_id": result.id,
             "chat_id": str(chat_id),
@@ -387,30 +402,21 @@ async def clear_draft(
 async def send_file(
     db: AsyncSession,
     user_id: UUID,
-    chat_id: UUID,
+    chat_id: SendTarget,
     file_url: str,
     caption: str | None = None,
     file_name: str | None = None,
 ) -> dict:
     """Download a file from URL and send it to a Telegram chat."""
     await asyncio.to_thread(_validate_url, file_url)
-    chat = await _get_chat(db, user_id, chat_id)
+    chat = None if chat_id == "me" else await _get_chat(db, user_id, chat_id)
     settings = get_settings()
 
     if not file_name:
         path = urlparse(file_url).path
         file_name = Path(path).name or "file"
     file_name = _sanitize_file_name(file_name)
-    work_parent: str | None = None
-    if settings.environment == "production":
-        work_root = settings.media_root / "outbound-work"
-        work_root.mkdir(parents=True, exist_ok=True)
-        work_parent = str(work_root)
-
-    with tempfile.TemporaryDirectory(
-        prefix="wai-outbound-",
-        dir=work_parent,
-    ) as temp_dir:
+    with _outbound_directory() as temp_dir:
         temp_path = Path(temp_dir) / file_name
         timeout = httpx.Timeout(
             connect=30.0,
@@ -440,34 +446,79 @@ async def send_file(
                             output.write(chunk)
                     break
 
-        client = await get_client(user_id, db)
-        try:
-            entity = await _resolve_chat_entity(client, db, chat)
-            result = await client.send_file(
-                entity,
-                str(temp_path),
-                caption=caption,
-                file_name=file_name,
-            )
-            return {
-                "telegram_message_id": result.id,
-                "chat_id": str(chat_id),
-                "file_name": file_name,
-            }
-        except (
-            FloodWaitError,
-            ChatWriteForbiddenError,
-            UserBannedInChannelError,
-            RPCError,
-            ConnectionError,
-            OSError,
-        ) as e:
-            if is_session_authorization_error(e):
-                await invalidate_client_authorization(client, user_id, e)
-                raise TelegramSessionUnauthorizedError(SESSION_EXPIRED_MESSAGE) from e
-            _handle_telethon_error(e)
-        finally:
-            await client.disconnect()
+        return await _send_file_path(db, user_id, chat_id, temp_path, caption, chat)
+
+
+def _outbound_directory():
+    settings = get_settings()
+    work_parent = None
+    if settings.environment == "production":
+        work_root = settings.media_root / "outbound-work"
+        work_root.mkdir(parents=True, exist_ok=True)
+        work_parent = str(work_root)
+    return tempfile.TemporaryDirectory(prefix="wai-outbound-", dir=work_parent)
+
+
+async def _send_file_path(
+    db: AsyncSession,
+    user_id: UUID,
+    chat_id: SendTarget,
+    path: Path,
+    caption: str | None,
+    chat: TelegramChat | None = None,
+) -> dict:
+    if chat_id == "me" and caption and len(caption.encode("utf-16-le")) // 2 > 1024:
+        raise ValueError("Saved Messages file caption must be at most 1024 characters")
+    client = await get_client(user_id, db)
+    try:
+        entity = (
+            InputPeerSelf()
+            if chat_id == "me"
+            else await _resolve_chat_entity(client, db, chat)
+        )
+        # Saved files are originals: no photo compression or implicit Markdown parsing.
+        options = (
+            {"force_document": True, "parse_mode": None} if chat_id == "me" else {}
+        )
+        result = await client.send_file(
+            entity, str(path), caption=caption, file_name=path.name, **options
+        )
+        return {
+            "telegram_message_id": result.id,
+            "chat_id": str(chat_id),
+            "file_name": path.name,
+        }
+    except (RPCError, ConnectionError, OSError) as e:
+        if is_session_authorization_error(e):
+            await invalidate_client_authorization(client, user_id, e)
+            raise TelegramSessionUnauthorizedError(SESSION_EXPIRED_MESSAGE) from e
+        _handle_telethon_error(e)
+    finally:
+        await client.disconnect()
+
+
+async def upload_to_saved_messages(
+    db: AsyncSession,
+    user_id: UUID,
+    chunks: AsyncIterator[bytes],
+    file_name: str,
+    caption: str | None = None,
+) -> dict:
+    """Stream a local original to private temporary storage, then to the owner's self peer."""
+    file_name = _sanitize_file_name(file_name)
+    with _outbound_directory() as temp_dir:
+        path = Path(temp_dir) / file_name
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("wb") as output:
+            async for chunk in chunks:
+                await asyncio.to_thread(output.write, chunk)
+                digest.update(chunk)
+                size += len(chunk)
+        if not size:
+            raise ValueError("Cannot send an empty file")
+        result = await _send_file_path(db, user_id, "me", path, caption)
+        return {**result, "file_size": size, "sha256": digest.hexdigest()}
 
 
 async def reply_to_message(

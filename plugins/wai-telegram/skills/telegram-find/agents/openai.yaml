@@ -1,0 +1,4 @@
+interface:
+  display_name: "Найти в Telegram"
+  short_description: "Переписки, файлы и голосовые по смыслу"
+  default_prompt: "Используй $telegram-find, чтобы найти нужную переписку или материал в Telegram."
