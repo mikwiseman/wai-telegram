@@ -97,6 +97,7 @@ def test_data_classes_and_defaults():
 
 def test_tool_definitions_convert_to_responses_api_schema():
     assert {tool["name"] for tool in TOOLS} == {
+        "get_inbox",
         "clear_draft",
         "search_messages",
         "get_files",

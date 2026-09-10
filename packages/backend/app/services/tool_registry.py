@@ -46,6 +46,7 @@ from app.services.file_browse_service import (
     normalize_media_types,
 )
 from app.services.file_search_service import find_files
+from app.services.inbox_service import get_inbox
 from app.services.search_service import semantic_search
 from app.services.telegram_links import (
     build_media_download_url,
@@ -80,6 +81,56 @@ _MESSAGE_LOCATOR = {
 }
 
 TOOL_DEFINITIONS = (
+    ToolDefinition(
+        "get_inbox",
+        "Read recent conversation tails in one fast batch for unanswered questions, "
+        "open promises, waiting-for replies, or context across several chats. "
+        "Returns original messages in chronological order, sender direction, reply/thread IDs, "
+        "media previews, source links and per-chat older-message cursors. "
+        "Default: 20 most recently active private/group/supergroup chats, 12 messages each, "
+        "including already-read chats. Set active_since to bound discovery or chat_ids "
+        "to read up to 40 chosen conversations. Channels require explicit chat_types. "
+        "This is evidence, not an automatic needs-reply classification. "
+        "No Telegram RPCs, sync or mark-read; do not call refresh_chats/get_data_status first. "
+        "sync_recommended flags a missing known latest message; an old last_sync_at alone "
+        "does not make a quiet chat stale. More history: get_chat_messages(before=next_message_cursor). "
+        "Use cursor with the same discovery filters for more chats; this is live pagination, "
+        "not a frozen account snapshot. Never describe one page of tails as the entire inbox.",
+        {
+            "type": "object",
+            "properties": {
+                "chat_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 40,
+                    "items": {"type": "string", "format": "uuid"},
+                },
+                "chat_types": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "string",
+                        "enum": ["private", "group", "supergroup", "channel"],
+                    },
+                },
+                "active_since": {"type": "string", "format": "date-time"},
+                "cursor": {"type": "string"},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 40,
+                    "default": 20,
+                },
+                "messages_per_chat": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "default": 12,
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
     ToolDefinition(
         "get_files",
         "List and download the files shared in Telegram chats - documents, "
@@ -296,7 +347,9 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "get_data_status",
-        "Return data freshness, queue depths, persistent cache usage/hit ratio, active auth state and processing breakdown.",
+        "Diagnostic account-wide counts, queue depths, cache usage and auth state. "
+        "Can be expensive on large archives; not a prerequisite for reading or searching. "
+        "Use get_inbox for conversation evidence and missing-latest-message checks.",
         {"type": "object", "properties": {}},
     ),
 )
@@ -1220,6 +1273,72 @@ async def _get_transcript_segments(
     }
 
 
+async def _get_inbox(
+    db: AsyncSession, user_id: UUID, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    allowed = {
+        "chat_ids",
+        "chat_types",
+        "active_since",
+        "cursor",
+        "limit",
+        "messages_per_chat",
+    }
+    if set(arguments) - allowed:
+        raise ToolInputError("Unknown get_inbox arguments")
+    for name in ("chat_ids", "chat_types"):
+        if name in arguments and not arguments[name]:
+            raise ToolInputError(f"{name} must be a non-empty array")
+    for name in ("limit", "messages_per_chat"):
+        if name in arguments and (
+            isinstance(arguments[name], bool) or not isinstance(arguments[name], int)
+        ):
+            raise ToolInputError(f"{name} must be an integer")
+    chat_ids = _uuid_list(arguments, "chat_ids")
+    if chat_ids:
+        chat_ids = list(dict.fromkeys(chat_ids))
+        if len(chat_ids) > 40:
+            raise ToolInputError("At most 40 chat_ids per call")
+        if any(
+            arguments.get(name) is not None
+            for name in ("chat_types", "active_since", "cursor")
+        ):
+            raise ToolInputError("Use chat_ids or discovery filters/cursor, not both")
+    limit = _optional_bounded_int(arguments, "limit", maximum=40) or 20
+    messages_per_chat = (
+        _optional_bounded_int(arguments, "messages_per_chat", maximum=30) or 12
+    )
+    if (len(chat_ids) if chat_ids else limit) * messages_per_chat > 480:
+        raise ToolInputError(
+            "At most 480 messages per batch; reduce limit or messages_per_chat"
+        )
+    try:
+        result = await get_inbox(
+            db,
+            user_id,
+            chat_ids=chat_ids,
+            chat_types=_chat_type_list(arguments, "chat_types"),
+            active_since=_optional_datetime(arguments, "active_since"),
+            cursor=_optional_text(arguments, "cursor"),
+            limit=limit,
+            messages_per_chat=messages_per_chat,
+        )
+    except (CursorError, ValueError) as exc:
+        raise ToolInputError(str(exc)) from exc
+    redis_client = aioredis.from_url(
+        settings.redis_url, socket_connect_timeout=1, socket_timeout=1
+    )
+    try:
+        result["listener_active"] = bool(
+            await redis_client.exists(f"listener:active:{user_id}")
+        )
+    except (aioredis.RedisError, OSError):
+        result["listener_active"] = None
+    finally:
+        await redis_client.aclose()
+    return result
+
+
 async def _get_data_status(
     db: AsyncSession, user_id: UUID, _arguments: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1341,6 +1460,7 @@ async def _get_data_status(
 
 ToolHandler = Callable[[AsyncSession, UUID, dict[str, Any]], Awaitable[dict[str, Any]]]
 _HANDLERS: dict[str, ToolHandler] = {
+    "get_inbox": _get_inbox,
     "search_messages": _search_messages,
     "get_files": _get_files,
     "get_message": _get_message,

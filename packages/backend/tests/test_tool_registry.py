@@ -124,6 +124,7 @@ async def test_tools_api_lists_all_shared_data_tools(auth_client):
     tools = response.json()["tools"]
     names = {tool["name"] for tool in tools}
     assert names == {
+        "get_inbox",
         "clear_draft",
         "search_messages",
         "get_files",

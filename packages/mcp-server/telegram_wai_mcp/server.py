@@ -866,7 +866,7 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Check the status of your Telegram data. Returns a compact summary: total chats/messages, "
                 "chat type breakdown, data freshness distribution, and top 10 most recently active chats. "
-                "**Call this first** to understand what data is available. "
+                "Account-wide diagnostics can be expensive; not needed before ordinary retrieval. "
                 "Use list_chats to browse all chats, or search_messages to find specific content."
             ),
             inputSchema={
@@ -1341,6 +1341,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent] |
             result = await api.execute_data_tool("get_data_status")
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
+        elif name == "get_inbox":
+            result = await api.execute_data_tool("get_inbox", dict(args))
+            return format_inbox(result)
+
         elif name == "get_files":
             # Arguments are validated by the backend against the schema this server
             # already advertises from the shared registry, so pass them through.
@@ -1672,9 +1676,94 @@ def _freshness_label(last_sync_at: Any, listener_active: bool = False) -> str:
             return "LIVE"
         if age < timedelta(hours=1):
             return "FRESH"
-        return "STALE"
+        return "OLD_SYNC"
     except (ValueError, TypeError):
         return "NEVER"
+
+
+def format_inbox(result: dict) -> list[TextContent]:
+    """Compact primary evidence, with one chat header instead of repeated metadata."""
+    chats = result.get("conversations", [])
+    lines = [
+        f"{len(chats)} conversation tails; messages oldest-first. Checked: {result.get('checked_at')}",
+        f"Scope: {json.dumps(result.get('scope', {}), ensure_ascii=False)}",
+        "These are original message excerpts, not a classified or complete list of obligations.",
+    ]
+    listener = result.get("listener_active")
+    if listener is True:
+        lines.append("Listener connected. Old last_sync_at alone is not a history gap.")
+    else:
+        state = "offline" if listener is False else "unknown"
+        lines.append(
+            f"Listener {state}; newest Telegram activity may be missing. Verify selected relevant chats."
+        )
+    for chat in chats:
+        lines.extend(
+            [
+                "",
+                f"## {chat.get('title')} ({chat.get('chat_type')}) | chat_id={chat.get('chat_id')}",
+                f"Unread={chat.get('unread_count', 0)} | last_sync_at={chat.get('last_sync_at')}",
+            ]
+        )
+        if chat.get("sync_recommended"):
+            lines.append(
+                f"Known latest #{chat.get('latest_known_message_id')} is missing: sync_chat for this chat if relevant."
+            )
+        elif chat.get("latest_known_message_available") is None:
+            lines.append(
+                "Latest-message coverage unknown; do not infer completeness from an empty tail."
+            )
+        for message in chat.get("messages", []):
+            sender = (
+                "Me →"
+                if message.get("is_outgoing")
+                else f"← {message.get('sender_name') or 'Unknown'}"
+            )
+            metadata = []
+            for field, label in (("reply_to_message_id", "reply_to"), ("thread_id", "thread")):
+                if message.get(field) is not None:
+                    metadata.append(f"{label}={message[field]}")
+            lines.append(
+                f"#{message.get('telegram_message_id')} {message.get('sent_at')} {sender} {' '.join(metadata)}".rstrip()
+            )
+            if message.get("text"):
+                suffix = (
+                    " [text truncated; get_message for the full text]"
+                    if message.get("text_truncated")
+                    else ""
+                )
+                lines.append(f"  {message['text']}{suffix}")
+            if message.get("has_media"):
+                lines.append(
+                    f"  Media: {message.get('media_type')} {message.get('media_file_name') or ''} "
+                    f"status={message.get('media_processing_status')}".rstrip()
+                )
+                if message.get("content_preview"):
+                    suffix = (
+                        " [content truncated; get_message_content for more]"
+                        if message.get("content_truncated")
+                        else ""
+                    )
+                    lines.append(f"  Extracted content: {message['content_preview']}{suffix}")
+                else:
+                    lines.append(
+                        "  No extracted content yet; use get_message_content if this attachment matters."
+                    )
+            if message.get("telegram_message_url"):
+                lines.append(f"  {message['telegram_message_url']}")
+        if chat.get("has_more_messages"):
+            lines.append(
+                f"Older context: get_chat_messages before={chat.get('next_message_cursor')}"
+            )
+    if result.get("has_more"):
+        lines.append(
+            f"\nMore chats: get_inbox cursor={result.get('next_cursor')} with the same filters."
+        )
+    else:
+        lines.append(
+            "\nEnd of chats in this scope; each returned conversation is still only a tail."
+        )
+    return [TextContent(type="text", text="\n".join(lines))]
 
 
 def format_chat_list(result: dict, listener_active: bool = False) -> list[TextContent]:
@@ -1685,6 +1774,9 @@ def format_chat_list(result: dict, listener_active: bool = False) -> list[TextCo
     chats = result.get("chats", [])
     total = result.get("total", len(chats))
     lines = [f"Showing {len(chats)} of {total} total chats:\n"]
+    lines.append(
+        "OLD_SYNC is an old timestamp, not proof of missing messages. Use get_inbox for conversation tails and coverage.\n"
+    )
     for chat in chats:
         synced = chat.get("total_messages_synced", 0)
         title = chat.get("title", "Unknown")
