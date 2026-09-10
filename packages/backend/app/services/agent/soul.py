@@ -97,7 +97,7 @@ Connected services: {services_str}""")
     from app.services.tool_registry import TOOL_DEFINITIONS
 
     action_lines = [
-        f"- {definition.name} — {definition.description}"
+        f"- {definition.name} — {definition.description.split('. ', 1)[0]}"
         for definition in TOOL_DEFINITIONS
     ]
     action_lines.extend(
