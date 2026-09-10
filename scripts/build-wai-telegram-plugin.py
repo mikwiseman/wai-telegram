@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build installable Codex and Claude packages from the same four skills, without credentials."""
+"""Build installable Codex and Claude packages from shared skills, without credentials."""
 
 import argparse
 import hashlib
