@@ -11,6 +11,7 @@ from mcp.types import CallToolResult, ResourceLink, TextContent, Tool
 from starlette.requests import Request
 
 from telegram_wai_mcp.client import TelegramAIClient
+from telegram_wai_mcp.links import collect_links, validate_domains
 
 # Initialize MCP server
 server = Server("telegram-wai-mcp")
@@ -1326,6 +1327,41 @@ async def list_tools() -> list[Tool]:
             },
         ),
     ]
+    legacy_tools.append(
+        Tool(
+            name="get_links",
+            description=(
+                "List visible and hidden HTTP(S) links from a chat, with source message dates and "
+                "Telegram links. Use this for all shared Google Docs, press URLs or links from a "
+                "person, without guessing keywords. Filter by domains (including subdomains) or "
+                "dates. Scans up to max_pages * 500 synced messages per call. Follow next_cursor "
+                "as before, even if a filtered batch has no links. Deduplicates within each batch; "
+                "merge subsequent batches by url. Does not download or open linked documents."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chat_id": {"type": "string"},
+                    "domains": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                    "date_from": {
+                        "type": "string",
+                        "description": "ISO date/time, inclusive; dates use UTC",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "ISO date/time, inclusive; date includes the whole UTC day",
+                    },
+                    "before": {
+                        "type": "string",
+                        "description": "Opaque next_cursor from the previous batch",
+                    },
+                    "max_pages": {"type": "integer", "minimum": 1, "maximum": 10, "default": 2},
+                },
+                "required": ["chat_id"],
+                "additionalProperties": False,
+            },
+        )
+    )
     return shared_tools + [tool for tool in legacy_tools if tool.name not in shared_names]
 
 
@@ -1444,6 +1480,28 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent] |
                     ),
                 )
             ]
+
+        elif name == "get_links":
+            chat_id = _require_str(args, "chat_id")
+            before = args.get("before")
+            if before is not None and not isinstance(before, str):
+                raise ValueError('"before" must be a string cursor')
+            max_pages = args.get("max_pages", 2)
+            if type(max_pages) is not int or not 1 <= max_pages <= 10:
+                raise ValueError('"max_pages" must be an integer from 1 to 10')
+            result = await collect_links(
+                api,
+                chat_id=chat_id,
+                before=before,
+                max_pages=max_pages,
+                domains=validate_domains(args.get("domains")),
+                date_from=_optional_iso_datetime(args, "date_from"),
+                date_to=_optional_iso_datetime(args, "date_to", end_of_day=True),
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False))],
+                structuredContent=result,
+            )
 
         elif name == "get_chat_messages":
             chat_id = _require_str(args, "chat_id")
