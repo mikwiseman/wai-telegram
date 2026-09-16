@@ -69,6 +69,7 @@ class TestToolList:
             "list_chats",
             "refresh_chats",
             "get_chat_messages",
+            "get_links",
             "get_message_content",
             "get_transcript_segments",
             "sync_chat",
@@ -80,6 +81,9 @@ class TestToolList:
         search_tool = next(tool for tool in tools if tool.name == "search_messages")
         assert search_tool.inputSchema["properties"]["chat_ids"]["type"] == "array"
         assert "chat_id" not in search_tool.inputSchema["properties"]
+        links_tool = next(tool for tool in tools if tool.name == "get_links")
+        assert links_tool.inputSchema["required"] == ["chat_id"]
+        assert links_tool.inputSchema["properties"]["max_pages"]["maximum"] == 10
         list_chats_tool = next(tool for tool in tools if tool.name == "list_chats")
         assert list_chats_tool.inputSchema["properties"]["unread_only"]["type"] == "boolean"
         client.list_data_tools.assert_awaited_once()
