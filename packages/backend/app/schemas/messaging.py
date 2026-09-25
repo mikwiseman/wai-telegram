@@ -31,3 +31,15 @@ class SendFileResponse(BaseModel):
 class SavedFileResponse(SendFileResponse):
     file_size: int
     sha256: str
+
+
+class DraftFileResponse(BaseModel):
+    chat_id: str
+    text: str
+    file_name: str
+    file_size: int
+    sha256: str
+    has_media: bool
+    saved: bool
+    sent: bool
+    replaces_existing_draft: bool

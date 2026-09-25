@@ -171,7 +171,7 @@ def require_scope(scope: str):
     async def _check(
         ctx: Annotated[AuthContext, Depends(get_auth_context)],
     ) -> AuthContext:
-        if scope not in ctx.scopes:
+        if not ctx.has_scope(scope):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"API key lacks '{scope}' permission",
@@ -184,3 +184,4 @@ def require_scope(scope: str):
 CurrentUser = Annotated[User, Depends(get_current_user)]
 OptionalUser = Annotated[User | None, Depends(get_current_user_optional)]
 RequireWrite = Annotated[AuthContext, Depends(require_scope("write"))]
+RequireDraft = Annotated[AuthContext, Depends(require_scope("draft"))]

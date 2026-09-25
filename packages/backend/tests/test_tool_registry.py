@@ -177,6 +177,48 @@ async def test_save_draft_tool_preserves_text_and_uses_owner_chat_id(
     save.assert_awaited_once_with(db_session, test_user.id, chat_id, text)
 
 
+async def test_save_draft_tool_can_attach_remote_file(db_session, test_user):
+    chat_id = uuid4()
+    expected = {
+        "chat_id": str(chat_id),
+        "text": "Короткая подпись",
+        "file_name": "offer.pdf",
+        "file_size": 9,
+        "sha256": "abc",
+        "has_media": True,
+        "saved": True,
+        "sent": False,
+        "replaces_existing_draft": True,
+    }
+
+    with patch(
+        "app.services.tool_registry.save_telegram_draft_file_from_url",
+        new_callable=AsyncMock,
+        return_value=expected,
+    ) as save:
+        result = await execute_data_tool(
+            db_session,
+            test_user.id,
+            "save_draft",
+            {
+                "chat_id": str(chat_id),
+                "text": "Короткая подпись",
+                "file_url": "https://example.com/offer.pdf",
+                "file_name": "offer.pdf",
+            },
+        )
+
+    assert result == expected
+    save.assert_awaited_once_with(
+        db_session,
+        test_user.id,
+        chat_id,
+        "https://example.com/offer.pdf",
+        "Короткая подпись",
+        "offer.pdf",
+    )
+
+
 async def test_clear_draft_uses_draft_only_handler(db_session, test_user):
     chat_id = uuid4()
     expected = {
