@@ -317,6 +317,54 @@ class TestSaveDraft:
         mock_client.send_message.assert_not_awaited()
         mock_client.disconnect.assert_awaited_once()
 
+    async def test_save_draft_file_attaches_media_without_sending(
+        self, db_session, test_user, tmp_path
+    ):
+        from app.services.messaging_service import _save_draft_file_path
+        from telethon.tl.functions.messages import SaveDraftRequest
+        from telethon.tl.types import InputMediaUploadedDocument
+        from tests.factories import TelegramChatFactory
+
+        chat = TelegramChatFactory.create(user_id=test_user.id)
+        db_session.add(chat)
+        await db_session.flush()
+        path = tmp_path / "offer.pdf"
+        path.write_bytes(b"draft-pdf")
+
+        uploaded = object()
+        mock_client = AsyncMock(return_value=True)
+        mock_client.upload_file = AsyncMock(return_value=uploaded)
+        mock_client.disconnect = AsyncMock()
+
+        with (
+            patch(
+                "app.services.messaging_service.get_client",
+                return_value=mock_client,
+            ),
+            patch(
+                "app.services.messaging_service._resolve_chat_entity",
+                new_callable=AsyncMock,
+                return_value=object(),
+            ),
+        ):
+            result = await _save_draft_file_path(
+                db_session, test_user.id, chat.id, path, "Смотри оффер"
+            )
+
+        request = mock_client.await_args.args[0]
+        assert isinstance(request, SaveDraftRequest)
+        assert isinstance(request.media, InputMediaUploadedDocument)
+        assert request.media.file is uploaded
+        assert request.media.attributes[0].file_name == "offer.pdf"
+        assert request.message == "Смотри оффер"
+        assert result["file_name"] == "offer.pdf"
+        assert result["file_size"] == len(b"draft-pdf")
+        assert result["has_media"] is True
+        assert result["saved"] is True
+        assert result["sent"] is False
+        mock_client.send_message.assert_not_awaited()
+        mock_client.disconnect.assert_awaited_once()
+
     async def test_save_draft_rejects_blank_text_before_connecting(
         self, db_session, test_user
     ):

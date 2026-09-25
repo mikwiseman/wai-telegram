@@ -1544,12 +1544,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent] |
 
         elif name == "save_draft":
             chat_id = _require_str(args, "chat_id")
-            text = args.get("text")
-            if not isinstance(text, str) or not text.strip():
+            text = args.get("text", "")
+            file_url = args.get("file_url")
+            file_name = args.get("file_name")
+            if not isinstance(text, str):
+                raise ValueError('"text" must be a string')
+            if file_url is not None and (not isinstance(file_url, str) or not file_url.strip()):
+                raise ValueError('"file_url" must be a non-empty string')
+            if file_name is not None and (not isinstance(file_name, str) or not file_name.strip()):
+                raise ValueError('"file_name" must be a non-empty string')
+            if not text.strip() and not file_url:
                 raise ValueError('"text" must be a non-empty string')
+            tool_arguments = {"chat_id": chat_id, "text": text}
+            if file_url:
+                tool_arguments["file_url"] = file_url.strip()
+            if file_name:
+                tool_arguments["file_name"] = file_name.strip()
             result = await api.execute_data_tool(
                 "save_draft",
-                {"chat_id": chat_id, "text": text},
+                tool_arguments,
             )
             return format_draft_result(result)
 
@@ -2151,6 +2164,8 @@ def format_draft_result(result: dict) -> list[TextContent]:
     ]
     if text:
         lines.append(f"Draft: {text}")
+    if result.get("has_media") is True:
+        lines.append(f"File: {result.get('file_name', 'attached file')}")
     return [TextContent(type="text", text="\n".join(lines))]
 
 
