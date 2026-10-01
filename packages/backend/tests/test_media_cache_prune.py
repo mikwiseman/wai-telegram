@@ -5,6 +5,7 @@ that advertise a download link, answer 503 behind it, and refuse to be fetched
 again because their status still says ready.
 """
 
+import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -232,3 +233,132 @@ async def test_a_pruned_file_stays_downloadable(db_session, test_user, media_roo
     assert entry["media_download_url"], "the link must survive the file"
     assert entry["next_action"].startswith("Download media_download_url before")
     assert message.content_text == "extracted text stays"
+
+
+def _orphan_file(root, *, key=None, name="original.pdf", age=timedelta(days=1)):
+    key = key or uuid4().hex * 2
+    path = root / key[:2] / key / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"orphaned cache")
+    timestamp = (NOW - age).timestamp()
+    os.utime(path, (timestamp, timestamp))
+    return path
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "original.pdf",
+        "original.mov",
+        "original.part",
+        "extracted-content.md",
+        "transcript-000000-nova-3.json",
+        "chunk-0000.ogg",
+        "visual-timeline/000001.jpg",
+        "pdf-ocr/page-1.png",
+    ],
+)
+async def test_an_old_orphan_is_removed_without_a_database_row(
+    db_session, media_root, name
+):
+    path = _orphan_file(media_root, name=name)
+
+    with patch("app.cli.media_cache_prune.datetime") as clock:
+        clock.now.return_value = NOW
+        result = await _prune(db_session, media_root)
+
+    assert not path.exists()
+    assert result["deleted_files"] == 1
+    assert result["freed_bytes"] == len(b"orphaned cache")
+    assert result["cleared_rows"] == 0
+
+
+async def test_a_recent_orphan_is_kept(db_session, media_root):
+    path = _orphan_file(media_root, age=timedelta(minutes=5))
+
+    with patch("app.cli.media_cache_prune.datetime") as clock:
+        clock.now.return_value = NOW
+        result = await _prune(db_session, media_root)
+
+    assert path.exists()
+    assert result["deleted_files"] == 0
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["original.part", "transcript-000000-nova-3.json", "visual-timeline/000001.jpg"],
+)
+async def test_an_active_cache_key_keeps_its_unregistered_files(
+    db_session, test_user, media_root, name
+):
+    _message, media_object, _rel = await _cached(
+        db_session,
+        test_user,
+        media_root,
+        telegram_message_id=600,
+        fetched_at=None,
+        processing=MediaProcessingStatus.PROCESSING,
+        write_file=False,
+    )
+    media_object.relative_path = None
+    media_object.status = MediaObjectStatus.FETCHING
+    await db_session.flush()
+    path = _orphan_file(media_root, key=media_object.cache_key, name=name)
+
+    with patch("app.cli.media_cache_prune.datetime") as clock:
+        clock.now.return_value = NOW
+        result = await _prune(db_session, media_root)
+
+    assert path.exists(), "a resumable download has a key before it has a relative_path"
+    assert result["deleted_files"] == 0
+
+
+async def test_a_registered_key_without_a_path_keeps_its_original(
+    db_session, test_user, media_root
+):
+    _message, media_object, _rel = await _cached(
+        db_session,
+        test_user,
+        media_root,
+        telegram_message_id=700,
+        fetched_at=None,
+        processing=MediaProcessingStatus.PROCESSING,
+        write_file=False,
+    )
+    media_object.relative_path = None
+    await db_session.flush()
+    path = _orphan_file(media_root, key=media_object.cache_key)
+
+    with patch("app.cli.media_cache_prune.datetime") as clock:
+        clock.now.return_value = NOW
+        result = await _prune(db_session, media_root)
+
+    assert path.exists()
+    assert result["deleted_files"] == 0
+
+
+async def test_orphan_cleanup_leaves_other_files_and_symlink_targets_alone(
+    db_session, media_root, tmp_path
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "original.pdf"
+    target.write_bytes(b"keep outside")
+    timestamp = (NOW - timedelta(days=1)).timestamp()
+    os.utime(target, (timestamp, timestamp))
+    key = "ab" + "c" * 62
+    (media_root / "ab").mkdir()
+    (media_root / "ab" / key).symlink_to(outside, target_is_directory=True)
+    other_file = _orphan_file(media_root, name="unrelated.txt")
+    bot_file = media_root / "bot-api" / "original.pdf"
+    bot_file.parent.mkdir()
+    bot_file.write_bytes(b"keep bot data")
+
+    with patch("app.cli.media_cache_prune.datetime") as clock:
+        clock.now.return_value = NOW
+        result = await _prune(db_session, media_root)
+
+    assert target.read_bytes() == b"keep outside"
+    assert other_file.exists()
+    assert bot_file.exists()
+    assert result["deleted_files"] == 0
