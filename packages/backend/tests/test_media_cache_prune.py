@@ -245,7 +245,19 @@ def _orphan_file(root, *, key=None, name="original.pdf", age=timedelta(days=1)):
     return path
 
 
-@pytest.mark.parametrize("name", ["original.pdf", "original.mov", "original.part"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "original.pdf",
+        "original.mov",
+        "original.part",
+        "extracted-content.md",
+        "transcript-000000-nova-3.json",
+        "chunk-0000.ogg",
+        "visual-timeline/000001.jpg",
+        "pdf-ocr/page-1.png",
+    ],
+)
 async def test_an_old_orphan_is_removed_without_a_database_row(
     db_session, media_root, name
 ):
@@ -272,8 +284,12 @@ async def test_a_recent_orphan_is_kept(db_session, media_root):
     assert result["deleted_files"] == 0
 
 
-async def test_an_active_cache_key_keeps_its_unregistered_partial_file(
-    db_session, test_user, media_root
+@pytest.mark.parametrize(
+    "name",
+    ["original.part", "transcript-000000-nova-3.json", "visual-timeline/000001.jpg"],
+)
+async def test_an_active_cache_key_keeps_its_unregistered_files(
+    db_session, test_user, media_root, name
 ):
     _message, media_object, _rel = await _cached(
         db_session,
@@ -287,7 +303,7 @@ async def test_an_active_cache_key_keeps_its_unregistered_partial_file(
     media_object.relative_path = None
     media_object.status = MediaObjectStatus.FETCHING
     await db_session.flush()
-    path = _orphan_file(media_root, key=media_object.cache_key, name="original.part")
+    path = _orphan_file(media_root, key=media_object.cache_key, name=name)
 
     with patch("app.cli.media_cache_prune.datetime") as clock:
         clock.now.return_value = NOW

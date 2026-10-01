@@ -12,7 +12,7 @@ So the row goes with the file. The message keeps its transcript and summary, the
 listing reports the file as not_prepared rather than ready, and asking for it
 fetches it from Telegram again.
 
-Old originals and partial downloads can also outlive their database records.
+Originals, partial downloads, and extraction artifacts can outlive their records.
 Sweep those bytes too, while preserving every current cache key (including
 downloads that have no relative_path yet) and recently written files.
 """
@@ -126,7 +126,7 @@ async def prune_media_cache(retention_minutes: int = DEFAULT_RETENTION_MINUTES) 
         "retention_minutes": retention_minutes,
     }
     logger.info(
-        "Pruned %s cached originals (%s bytes, %s orphaned), cleared %s rows (%s had no file)",
+        "Pruned %s cached files (%s bytes, %s orphaned), cleared %s rows (%s had no file)",
         deleted_files,
         freed_bytes,
         orphaned_files,
@@ -168,9 +168,9 @@ def _remove_orphaned_files(
                 or not directory.is_dir()
             ):
                 continue
-            for path in directory.iterdir():
+            for path in directory.rglob("*"):
                 if (
-                    not path.name.startswith("original.")
+                    not _is_cache_artifact(path.relative_to(directory))
                     or path.is_symlink()
                     or not path.is_file()
                     or str(path.relative_to(root)) in relative_paths
@@ -184,13 +184,33 @@ def _remove_orphaned_files(
                 except FileNotFoundError:
                     continue
                 except OSError:
-                    logger.exception(
-                        "Could not remove orphaned cached original %s", path
-                    )
+                    logger.exception("Could not remove orphaned cache file %s", path)
                     continue
                 deleted_files += 1
                 freed_bytes += metadata.st_size
     return deleted_files, freed_bytes
+
+
+def _is_cache_artifact(relative_path: Path) -> bool:
+    if len(relative_path.parts) == 1:
+        return relative_path.name.startswith("original.") or any(
+            relative_path.match(pattern)
+            for pattern in (
+                "chunk-*.ogg",
+                "transcript-*.json",
+                "transcript-*.json.part",
+                "extracted-content.md",
+                "visual-timeline.md",
+                "visual-timeline.md.part",
+                "pdf-ocr.md",
+                "pdf-ocr.md.part",
+            )
+        )
+    return (
+        len(relative_path.parts) == 2
+        and relative_path.parts[0] in {"visual-timeline", "pdf-ocr"}
+        and relative_path.suffix in {".jpg", ".png"}
+    )
 
 
 def _remove_empty_dirs(root: Path) -> None:
