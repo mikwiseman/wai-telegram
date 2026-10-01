@@ -11,6 +11,10 @@ still says ready.
 So the row goes with the file. The message keeps its transcript and summary, the
 listing reports the file as not_prepared rather than ready, and asking for it
 fetches it from Telegram again.
+
+Old originals and partial downloads can also outlive their database records.
+Sweep those bytes too, while preserving every current cache key (including
+downloads that have no relative_path yet) and recently written files.
 """
 
 import asyncio
@@ -97,29 +101,103 @@ async def prune_media_cache(retention_minutes: int = DEFAULT_RETENTION_MINUTES) 
             cleared_rows += len(batch)
         await db.commit()
 
+        # Read keys after the row cleanup. A download gets its key before it
+        # gets a relative_path, so querying only non-null paths would remove
+        # resumable work. Keep all files belonging to a current key.
+        current = (
+            await db.execute(select(MediaObject.cache_key, MediaObject.relative_path))
+        ).all()
+        orphaned_files, orphaned_bytes = _remove_orphaned_files(
+            root,
+            cutoff,
+            cache_keys={row.cache_key for row in current},
+            relative_paths={row.relative_path for row in current if row.relative_path},
+        )
+        deleted_files += orphaned_files
+        freed_bytes += orphaned_bytes
+
     _remove_empty_dirs(root)
     result = {
         "deleted_files": deleted_files,
         "freed_bytes": freed_bytes,
         "cleared_rows": cleared_rows,
         "rows_already_missing_a_file": missing_rows,
+        "deleted_orphan_files": orphaned_files,
         "retention_minutes": retention_minutes,
     }
     logger.info(
-        "Pruned %s cached originals (%s bytes), cleared %s rows (%s had no file)",
+        "Pruned %s cached originals (%s bytes, %s orphaned), cleared %s rows (%s had no file)",
         deleted_files,
         freed_bytes,
+        orphaned_files,
         cleared_rows,
         missing_rows,
     )
     return result
 
 
+def _remove_orphaned_files(
+    root: Path,
+    cutoff: datetime,
+    *,
+    cache_keys: set[str],
+    relative_paths: set[str],
+) -> tuple[int, int]:
+    if not root.exists():
+        return 0, 0
+
+    deleted_files = 0
+    freed_bytes = 0
+    hex_digits = frozenset("0123456789abcdef")
+    for prefix in root.iterdir():
+        if (
+            len(prefix.name) != 2
+            or not set(prefix.name) <= hex_digits
+            or prefix.is_symlink()
+            or not prefix.is_dir()
+        ):
+            continue
+        for directory in prefix.iterdir():
+            key = directory.name
+            if (
+                len(key) != 64
+                or not set(key) <= hex_digits
+                or not key.startswith(prefix.name)
+                or key in cache_keys
+                or directory.is_symlink()
+                or not directory.is_dir()
+            ):
+                continue
+            for path in directory.iterdir():
+                if (
+                    not path.name.startswith("original.")
+                    or path.is_symlink()
+                    or not path.is_file()
+                    or str(path.relative_to(root)) in relative_paths
+                ):
+                    continue
+                try:
+                    metadata = path.stat()
+                    if metadata.st_mtime > cutoff.timestamp():
+                        continue
+                    path.unlink()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    logger.exception(
+                        "Could not remove orphaned cached original %s", path
+                    )
+                    continue
+                deleted_files += 1
+                freed_bytes += metadata.st_size
+    return deleted_files, freed_bytes
+
+
 def _remove_empty_dirs(root: Path) -> None:
     if not root.exists():
         return
     for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-        if path.is_dir() and not any(path.iterdir()):
+        if not path.is_symlink() and path.is_dir() and not any(path.iterdir()):
             try:
                 path.rmdir()
             except OSError:
