@@ -10,7 +10,6 @@ from app.core.database import get_db
 from app.core.limiter import limiter
 from app.schemas.messaging import (
     ReplyMessageRequest,
-    DraftFileResponse,
     SavedFileResponse,
     SendFileRequest,
     SendFileResponse,
@@ -23,7 +22,7 @@ from app.services.messaging_service import (
     send_file,
     send_message,
     upload_to_saved_messages,
-    save_draft_file_from_stream,
+    DRAFT_MEDIA_UNSUPPORTED,
 )
 
 router = APIRouter()
@@ -92,33 +91,15 @@ async def upload_saved_file_endpoint(
     return SavedFileResponse(**result)
 
 
-@router.post("/{chat_id}/draft-file", response_model=DraftFileResponse)
+@router.post("/{chat_id}/draft-file")
 @limiter.limit("10/minute")
 async def save_draft_file_endpoint(
     request: Request,
     chat_id: UUID,
     ctx: RequireDraft,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    file_name: Annotated[
-        str, Header(alias="X-File-Name", min_length=1, max_length=2048)
-    ],
-    caption: Annotated[
-        str | None, Header(alias="X-Telegram-Caption", max_length=16384)
-    ] = None,
-) -> DraftFileResponse:
-    """Stream a local file and save it as a server-synced draft attachment."""
-    try:
-        result = await save_draft_file_from_stream(
-            db,
-            ctx.user.id,
-            chat_id,
-            request.stream(),
-            unquote(file_name),
-            unquote(caption) if caption else None,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    return DraftFileResponse(**result)
+) -> None:
+    """Reject obsolete upload clients before reading bytes or changing a draft."""
+    raise HTTPException(status_code=410, detail=DRAFT_MEDIA_UNSUPPORTED)
 
 
 @router.post("/{chat_id}/reply", response_model=SendMessageResponse)

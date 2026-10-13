@@ -29,7 +29,7 @@ from app.services.messaging_service import clear_draft as clear_telegram_draft
 from app.services.messaging_service import list_drafts as list_telegram_drafts
 from app.services.messaging_service import save_draft as save_telegram_draft
 from app.services.messaging_service import (
-    save_draft_file_from_url as save_telegram_draft_file_from_url,
+    DRAFT_MEDIA_UNSUPPORTED,
 )
 from app.services.file_browse_service import (
     DEFAULT_CONTEXT_WINDOW,
@@ -269,23 +269,14 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "save_draft",
-        "Save or replace a server-synced Telegram draft in a chat. Pass file_url to attach one remote file, and file_name to control its filename. This never sends a message and replaces any existing draft in that chat.",
+        "Save or replace a server-synced Telegram text draft in a chat. Photo and file attachments are not supported. This never sends a message and replaces any existing draft in that chat.",
         {
             "type": "object",
             "properties": {
                 "chat_id": {"type": "string", "format": "uuid"},
-                "text": {"type": "string"},
-                "file_url": {
-                    "type": "string",
-                    "format": "uri",
-                    "description": "Optional HTTP(S) URL of one file to attach to the draft.",
-                },
-                "file_name": {
-                    "type": "string",
-                    "description": "Optional filename for the attached file.",
-                },
+                "text": {"type": "string", "minLength": 1},
             },
-            "required": ["chat_id"],
+            "required": ["chat_id", "text"],
             "additionalProperties": False,
         },
     ),
@@ -1062,18 +1053,12 @@ async def _save_draft(
     db: AsyncSession, user_id: UUID, arguments: dict[str, Any]
 ) -> dict[str, Any]:
     chat_id = _required_uuid(arguments, "chat_id")
-    file_url = _optional_text(arguments, "file_url")
-    file_name = _optional_text(arguments, "file_name")
+    if "file_url" in arguments or "file_name" in arguments:
+        raise ToolInputError(DRAFT_MEDIA_UNSUPPORTED)
     text = arguments.get("text", "")
-    if not isinstance(text, str):
-        raise ToolInputError("text must be a string")
-    if not text.strip() and not file_url:
+    if not isinstance(text, str) or not text.strip():
         raise ToolInputError("text must be a non-empty string")
     try:
-        if file_url:
-            return await save_telegram_draft_file_from_url(
-                db, user_id, chat_id, file_url, text, file_name
-            )
         return await save_telegram_draft(db, user_id, chat_id, text)
     except ValueError as exc:
         raise ToolInputError(str(exc)) from exc

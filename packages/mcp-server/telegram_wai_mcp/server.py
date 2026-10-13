@@ -1544,22 +1544,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent] |
 
         elif name == "save_draft":
             chat_id = _require_str(args, "chat_id")
-            text = args.get("text", "")
-            file_url = args.get("file_url")
-            file_name = args.get("file_name")
-            if not isinstance(text, str):
-                raise ValueError('"text" must be a string')
-            if file_url is not None and (not isinstance(file_url, str) or not file_url.strip()):
-                raise ValueError('"file_url" must be a non-empty string')
-            if file_name is not None and (not isinstance(file_name, str) or not file_name.strip()):
-                raise ValueError('"file_name" must be a non-empty string')
-            if not text.strip() and not file_url:
-                raise ValueError('"text" must be a non-empty string')
+            if "file_url" in args or "file_name" in args:
+                raise ValueError(
+                    "Telegram draft attachments are not supported. Save the text "
+                    "and keep the media with the local review draft."
+                )
+            text = _require_str(args, "text")
             tool_arguments = {"chat_id": chat_id, "text": text}
-            if file_url:
-                tool_arguments["file_url"] = file_url.strip()
-            if file_name:
-                tool_arguments["file_name"] = file_name.strip()
             result = await api.execute_data_tool(
                 "save_draft",
                 tool_arguments,
@@ -2164,8 +2155,6 @@ def format_draft_result(result: dict) -> list[TextContent]:
     ]
     if text:
         lines.append(f"Draft: {text}")
-    if result.get("has_media") is True:
-        lines.append(f"File: {result.get('file_name', 'attached file')}")
     return [TextContent(type="text", text="\n".join(lines))]
 
 
