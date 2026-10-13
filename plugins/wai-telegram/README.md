@@ -94,3 +94,7 @@ python3 scripts/build-wai-telegram-plugin.py --output /absolute/path/wai-telegra
 ```
 
 Сборщик создаёт два установочных каталога с маркетплейсами, ZIP для каждого клиента и отдельный ZIP плагина для Claude Desktop. Содержание скиллов общее; конфигурация MCP соответствует клиенту. Версия находится в `plugins/wai-telegram/.codex-plugin/plugin.json`.
+
+### Полный пост до approve
+
+`telegram-drafts/scripts/post_draft.py` сохраняет картинку и Markdown-подпись в собственном хранилище Wai Telegram через API и проверяет чтением обратно. Сохранение не обращается к Telegram. Публикация — отдельная команда с `--approve` после явного поручения пользователя; полный черновик не синхронизируется с текстовым черновиком в приложении Telegram.
