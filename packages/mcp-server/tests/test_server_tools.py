@@ -203,71 +203,21 @@ class TestCallTool:
         mock_api.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_save_draft_forwards_one_file_attachment(self):
+    @pytest.mark.parametrize("text", ["Caption", ""])
+    async def test_save_draft_rejects_media_before_backend_write(self, text):
         mock_api = AsyncMock()
-        mock_api.execute_data_tool.return_value = {
-            "chat_id": "chat-123",
-            "text": "Посмотри",
-            "file_name": "offer.pdf",
-            "has_media": True,
-            "saved": True,
-            "sent": False,
-        }
-
         with patch("telegram_wai_mcp.server.get_client", return_value=mock_api):
             result = await server.call_tool(
                 "save_draft",
                 {
                     "chat_id": "chat-123",
-                    "text": "Посмотри",
-                    "file_url": "https://example.com/offer.pdf",
-                    "file_name": "offer.pdf",
+                    "text": text,
+                    "file_url": "https://example.com/chart.jpg",
                 },
             )
-
-        assert "File: offer.pdf" in result[0].text
-        assert "No Telegram message was sent" in result[0].text
-        mock_api.execute_data_tool.assert_awaited_once_with(
-            "save_draft",
-            {
-                "chat_id": "chat-123",
-                "text": "Посмотри",
-                "file_url": "https://example.com/offer.pdf",
-                "file_name": "offer.pdf",
-            },
-        )
-        mock_api.close.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_save_draft_allows_empty_text_when_file_is_present(self):
-        mock_api = AsyncMock()
-        mock_api.execute_data_tool.return_value = {
-            "chat_id": "chat-123",
-            "text": "",
-            "file_name": "offer.pdf",
-            "has_media": True,
-            "saved": True,
-            "sent": False,
-        }
-
-        with patch("telegram_wai_mcp.server.get_client", return_value=mock_api):
-            result = await server.call_tool(
-                "save_draft",
-                {
-                    "chat_id": "chat-123",
-                    "file_url": "https://example.com/offer.pdf",
-                },
-            )
-
-        assert "File: offer.pdf" in result[0].text
-        mock_api.execute_data_tool.assert_awaited_once_with(
-            "save_draft",
-            {
-                "chat_id": "chat-123",
-                "text": "",
-                "file_url": "https://example.com/offer.pdf",
-            },
-        )
+        assert result.isError is True
+        assert "attachments are not supported" in result.content[0].text
+        mock_api.execute_data_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_refresh_chats_reports_fresh_unread_counts_without_reading(self):

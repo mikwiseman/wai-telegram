@@ -1,7 +1,6 @@
 """Tests for app.api.v1.messages — API endpoint integration tests."""
 
 from unittest.mock import AsyncMock, patch
-from urllib.parse import quote
 from uuid import uuid4
 
 from app.services.telegram_client import TelegramSessionUnauthorizedError
@@ -127,45 +126,18 @@ class TestSendFileEndpoint:
 
 
 class TestDraftFileEndpoint:
-    async def test_draft_file_streams_bytes_and_confirms_no_send(
-        self, auth_client, db_session, test_user
+    async def test_obsolete_upload_fails_without_connecting_to_telegram(
+        self, auth_client
     ):
-        chat = TelegramChatFactory.create(user_id=test_user.id)
-        db_session.add(chat)
-        await db_session.flush()
-        mock_result = {
-            "chat_id": str(chat.id),
-            "text": "Оффер",
-            "file_name": "offer.pdf",
-            "file_size": 9,
-            "sha256": "abc",
-            "has_media": True,
-            "saved": True,
-            "sent": False,
-            "replaces_existing_draft": True,
-        }
-
         with patch(
-            "app.api.v1.messages.save_draft_file_from_stream",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ) as save:
+            "app.services.messaging_service.get_client", new_callable=AsyncMock
+        ) as client:
             response = await auth_client.post(
-                f"/api/v1/messages/{chat.id}/draft-file",
-                content=b"draft-pdf",
-                headers={
-                    "Content-Type": "application/octet-stream",
-                    "X-File-Name": "offer.pdf",
-                    "X-Telegram-Caption": quote("Оффер", safe=""),
-                },
+                f"/api/v1/messages/{uuid4()}/draft-file", content=b"image-bytes"
             )
-
-        assert response.status_code == 200
-        assert response.json() == mock_result
-        args = save.await_args.args
-        assert args[2] == chat.id
-        assert args[4] == "offer.pdf"
-        assert args[5] == "Оффер"
+        assert response.status_code == 410
+        assert "attachments" in response.json()["detail"]
+        client.assert_not_awaited()
 
 
 class TestReplyMessageEndpoint:

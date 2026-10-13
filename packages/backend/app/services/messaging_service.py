@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import ipaddress
 import logging
-import mimetypes
 import socket
 import tempfile
 from collections.abc import AsyncIterator
@@ -24,8 +23,6 @@ from telethon.tl.functions.messages import SaveDraftRequest
 from telethon.tl.types import (
     Channel,
     Chat,
-    DocumentAttributeFilename,
-    InputMediaUploadedDocument,
     InputPeerChannel,
     InputPeerChat,
     InputPeerSelf,
@@ -318,73 +315,11 @@ async def save_draft(
         await client.disconnect()
 
 
-def _validate_draft_caption(text: str | None) -> str:
-    """Normalize a draft caption and enforce Telegram's media caption limit."""
-    caption = text or ""
-    if len(caption.encode("utf-16-le")) // 2 > 1024:
-        raise ValueError("Draft file caption must be at most 1024 characters")
-    return caption
-
-
-async def _save_draft_file_path(
-    db: AsyncSession,
-    user_id: UUID,
-    chat_id: UUID,
-    path: Path,
-    caption: str | None = None,
-) -> dict:
-    """Upload one local file and save it as the chat's server-synced draft media."""
-    caption = _validate_draft_caption(caption)
-    file_size = path.stat().st_size
-    if not file_size:
-        raise ValueError("Cannot attach an empty file to a draft")
-
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-
-    chat = await _get_chat(db, user_id, chat_id)
-    client = await get_client(user_id, db)
-    try:
-        entity = await _resolve_chat_entity(client, db, chat)
-        uploaded = await client.upload_file(str(path))
-        media = InputMediaUploadedDocument(
-            file=uploaded,
-            mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
-            attributes=[DocumentAttributeFilename(file_name=path.name)],
-            force_file=True,
-        )
-        saved = await client(
-            SaveDraftRequest(peer=entity, message=caption, media=media)
-        )
-        if not saved:
-            raise ValueError("Telegram did not confirm that the draft was saved")
-        return {
-            "chat_id": str(chat_id),
-            "text": caption,
-            "file_name": path.name,
-            "file_size": file_size,
-            "sha256": digest.hexdigest(),
-            "has_media": True,
-            "saved": True,
-            "sent": False,
-            "replaces_existing_draft": True,
-        }
-    except (
-        FloodWaitError,
-        ChatWriteForbiddenError,
-        UserBannedInChannelError,
-        RPCError,
-        ConnectionError,
-        OSError,
-    ) as e:
-        if is_session_authorization_error(e):
-            await invalidate_client_authorization(client, user_id, e)
-            raise TelegramSessionUnauthorizedError(SESSION_EXPIRED_MESSAGE) from e
-        _handle_telethon_error(e)
-    finally:
-        await client.disconnect()
+DRAFT_MEDIA_UNSUPPORTED = (
+    "Telegram does not support photo or file attachments in server-synced drafts. "
+    "Save the text with save_draft and keep the media with the local review draft "
+    "until sending is explicitly authorized."
+)
 
 
 async def _download_url_to_path(file_url: str, path: Path) -> None:
@@ -420,46 +355,6 @@ async def _download_url_to_path(file_url: str, path: Path) -> None:
                 return
 
     raise ValueError("Download did not produce a response")
-
-
-async def save_draft_file_from_url(
-    db: AsyncSession,
-    user_id: UUID,
-    chat_id: UUID,
-    file_url: str,
-    caption: str | None = None,
-    file_name: str | None = None,
-) -> dict:
-    """Download one remote file and save it as a Telegram draft attachment."""
-    if not isinstance(file_url, str) or not file_url.strip():
-        raise ValueError("Draft file URL must not be empty")
-    await _get_chat(db, user_id, chat_id)
-    if not file_name:
-        file_name = Path(urlparse(file_url).path).name or "file"
-    file_name = _sanitize_file_name(file_name)
-    with _outbound_directory() as temp_dir:
-        path = Path(temp_dir) / file_name
-        await _download_url_to_path(file_url, path)
-        return await _save_draft_file_path(db, user_id, chat_id, path, caption)
-
-
-async def save_draft_file_from_stream(
-    db: AsyncSession,
-    user_id: UUID,
-    chat_id: UUID,
-    chunks: AsyncIterator[bytes],
-    file_name: str,
-    caption: str | None = None,
-) -> dict:
-    """Stream a local file to temporary storage and save it as draft media."""
-    file_name = _sanitize_file_name(file_name)
-    _validate_draft_caption(caption)
-    with _outbound_directory() as temp_dir:
-        path = Path(temp_dir) / file_name
-        with path.open("wb") as output:
-            async for chunk in chunks:
-                await asyncio.to_thread(output.write, chunk)
-        return await _save_draft_file_path(db, user_id, chat_id, path, caption)
 
 
 async def list_drafts(db: AsyncSession, user_id: UUID) -> dict:
