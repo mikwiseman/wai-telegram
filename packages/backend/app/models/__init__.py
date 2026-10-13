@@ -5,6 +5,7 @@ from app.models.digital_agent import DigitalAgent
 from app.models.media import MediaObject, TranscriptSegment
 from app.models.metadata import MetadataReconciliationCheckpoint
 from app.models.message import MessageContentChunk, MessageRevision, TelegramMessage
+from app.models.post_draft import PostDraft
 from app.models.session import TelegramSession
 from app.models.settings import UserSettings
 from app.models.sync_job import SyncJob
@@ -25,4 +26,5 @@ __all__ = [
     "SyncJob",
     "DailyDigest",
     "DigitalAgent",
+    "PostDraft",
 ]
