@@ -125,7 +125,10 @@ async def get_auth_context(
                         headers={"WWW-Authenticate": "Bearer"},
                     )
                 api_key_record.last_used_at = datetime.now(UTC)
-                await db.flush()
+                # Finish authentication bookkeeping before the endpoint can
+                # wait on Telegram. A flush keeps this key row locked until
+                # request cleanup, serializing every caller of the same key.
+                await db.commit()
                 # Parse scopes from the stored comma-separated string
                 key_scopes = set(api_key_record.scopes.split(",")) & ALL_SCOPES
                 set_user_context(user_id=user.id, auth_type="api_key")
