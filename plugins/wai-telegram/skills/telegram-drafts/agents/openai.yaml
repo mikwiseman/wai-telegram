@@ -1,4 +1,4 @@
 interface:
-  display_name: "Сообщения и черновики"
+  display_name: "Черновики Telegram"
   short_description: "Инструкции, ответы и напоминания в черновиках Telegram"
   default_prompt: "Используй $telegram-drafts: сохрани Грише в Telegram короткую инструкцию по установке готового плагина, без отправки."
