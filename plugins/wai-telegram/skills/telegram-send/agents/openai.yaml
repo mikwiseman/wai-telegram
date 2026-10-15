@@ -1,0 +1,4 @@
+interface:
+  display_name: "Отправить в Telegram"
+  short_description: "Сообщения, фото и файлы людям, в группы и каналы"
+  default_prompt: "Используй $telegram-send: отправь готовые документы Грише через Wai Telegram MCP."
