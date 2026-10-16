@@ -1,6 +1,7 @@
 """File drafts retain actual bytes without any Telegram side effect."""
 
 import hashlib
+import base64
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 from urllib.parse import quote
@@ -154,6 +155,39 @@ async def test_file_draft_download_token_is_bound_to_owner_and_document(
             f"/api/v1/post-drafts/{draft_id}/download", params={"token": other_token}
         )
     ).status_code == 404
+
+
+async def test_inline_file_mcp_round_trip_and_invalid_sources(
+    auth_client, db_session, test_user
+):
+    chat = await chat_for(db_session, test_user)
+    args = {
+        "draft_id": str(uuid4()),
+        "chat_id": str(chat.id),
+        "text": TEXT,
+        "file_name": NAME,
+        "file_base64": base64.b64encode(DOCUMENT).decode(),
+    }
+    with patch(
+        "app.services.messaging_service.get_client", new_callable=AsyncMock
+    ) as telegram:
+        result = await auth_client.post(
+            "/api/v1/tools/save_file_draft", json={"arguments": args}
+        )
+        assert result.status_code == 200, result.text
+        assert result.json()["sha256"] == hashlib.sha256(DOCUMENT).hexdigest()
+        assert (
+            await auth_client.get(result.json()["media_download_url"])
+        ).content == DOCUMENT
+        for wrong in (
+            {**args, "file_base64": "%%%"},
+            {**args, "file_url": "https://example.com/docx"},
+        ):
+            bad = await auth_client.post(
+                "/api/v1/tools/save_file_draft", json={"arguments": wrong}
+            )
+            assert bad.status_code == 400
+    telegram.assert_not_awaited()
 
 
 async def test_file_drafts_are_owner_scoped_and_draft_access_is_required(

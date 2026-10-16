@@ -57,6 +57,7 @@ from app.services.post_draft_service import (
     get_post_draft,
     list_file_drafts,
     publish_post_draft,
+    save_file_draft_from_base64,
     save_file_draft_from_url,
 )
 from app.services.telegram_links import (
@@ -301,11 +302,12 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "save_file_draft",
-        "Save an immutable text+file draft in Wai from a downloadable URL (up to 10 MiB). "
+        "Save an immutable text+file draft in Wai (any file type, up to 10 MiB). "
+        "Provide exactly one of file_url or file_base64. For local files use the skill's "
+        "MCP upload helper; never print the base64 payload in the conversation. "
         "Never sends or contacts Telegram; not a native Telegram cloud draft. "
         "Use a fresh draft_id UUID; retry the same ID with identical content after a timeout. "
-        "Returns recipient, actual filename, byte count, SHA-256 and a private download link. "
-        "For local files use the skill's authenticated upload helper, then get_file_draft.",
+        "Returns recipient, actual filename, byte count, SHA-256 and a private download link.",
         {
             "type": "object",
             "properties": {
@@ -313,9 +315,13 @@ TOOL_DEFINITIONS = (
                 "chat_id": {"type": "string", "format": "uuid"},
                 "text": {"type": "string", "minLength": 1},
                 "file_url": {"type": "string", "format": "uri"},
+                "file_base64": {
+                    "type": "string",
+                    "description": "Base64-encoded local file bytes, alternative to file_url",
+                },
                 "file_name": {"type": "string", "minLength": 1},
             },
-            "required": ["draft_id", "chat_id", "text", "file_url", "file_name"],
+            "required": ["draft_id", "chat_id", "text", "file_name"],
             "additionalProperties": False,
         },
     ),
@@ -1151,12 +1157,21 @@ async def _list_drafts(
 async def _save_file_draft(
     db: AsyncSession, user_id: UUID, arguments: dict[str, Any]
 ) -> dict[str, Any]:
-    draft = await save_file_draft_from_url(
+    sources = [key for key in ("file_url", "file_base64") if key in arguments]
+    if len(sources) != 1:
+        raise ToolInputError("Provide exactly one of file_url or file_base64")
+    source = sources[0]
+    save = (
+        save_file_draft_from_url
+        if source == "file_url"
+        else save_file_draft_from_base64
+    )
+    draft = await save(
         db,
         user_id,
         _required_uuid(arguments, "draft_id"),
         _required_uuid(arguments, "chat_id"),
-        _required_text(arguments, "file_url"),
+        _required_text(arguments, source),
         _required_text(arguments, "file_name"),
         _required_text(arguments, "text"),
     )

@@ -1,5 +1,7 @@
 """Store complete posts without Telegram side effects; publish only on a separate call."""
 
+import base64
+import binascii
 import hashlib
 import mimetypes
 from collections.abc import AsyncIterator
@@ -214,6 +216,30 @@ async def save_file_draft_from_url(
         return await save_post_draft(
             db, user_id, draft_id, chat_id, chunks(), file_name, text, image_only=False
         )
+
+
+async def save_file_draft_from_base64(
+    db: AsyncSession,
+    user_id: UUID,
+    draft_id: UUID,
+    chat_id: UUID,
+    encoded: str,
+    file_name: str,
+    text: str,
+) -> PostDraft:
+    if len(encoded) > ((MAX_FILE_BYTES + 2) // 3) * 4:
+        raise PostDraftError(413, "Draft attachment exceeds 10 MiB")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise PostDraftError(400, "file_base64 must contain valid base64") from None
+
+    async def chunks():
+        yield data
+
+    return await save_post_draft(
+        db, user_id, draft_id, chat_id, chunks(), file_name, text, image_only=False
+    )
 
 
 async def list_file_drafts(
