@@ -1,10 +1,11 @@
-"""Media preparation stays local; the obsolete upload entry point cannot send."""
+"""Local uploads preserve original bytes in Wai and cannot implicitly send."""
 
 import hashlib
 import importlib.util
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock
+from uuid import uuid4
 
 import pytest
 
@@ -21,20 +22,26 @@ def load(name):
     return module
 
 
-def test_obsolete_uploader_fails_before_connecting(tmp_path):
+def test_file_uploader_uses_verified_wai_storage_without_publishing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
     uploader = load("save_draft_file")
-    path = tmp_path / "chart.jpg"
-    path.write_bytes(b"image")
-    with patch("http.client.HTTPSConnection") as connection:
-        with pytest.raises(ValueError, match="MEDIA_INVALID"):
-            uploader.save_draft_file(
-                path,
-                "Caption",
-                chat_id="34d62d3f-9070-4189-8f26-97bdf0158cd2",
-                base_url="https://telegram.waiwai.is",
-                api_key="unused",
-            )
-        connection.assert_not_called()
+    path = tmp_path / "contract.docx"
+    path.write_bytes(b"document")
+    client = Mock()
+    client.save.return_value = {"sent": False, "readback_verified": True}
+    factory = Mock(return_value=client)
+    monkeypatch.setattr(uploader, "DraftClient", factory)
+    draft_id, chat_id = str(uuid4()), str(uuid4())
+    result = uploader.save_draft_file(
+        path, "Caption", draft_id=draft_id, chat_id=chat_id
+    )
+    client.save.assert_called_once_with(
+        draft_id, chat_id, path, "Caption", media_type="file"
+    )
+    client.publish.assert_not_called()
+    assert result["sent"] is False
 
 
 def test_local_post_keeps_exact_caption_and_attachment(tmp_path):

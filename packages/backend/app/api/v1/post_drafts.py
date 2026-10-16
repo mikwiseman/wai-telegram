@@ -1,16 +1,19 @@
 from typing import Annotated, Literal
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, RequireDraft, RequireWrite, require_scope
 from app.core.database import get_db
 from app.core.limiter import limiter
+from app.models.user import User
 from app.services.post_draft_service import (
     PostDraftError,
+    draft_download_owner,
     get_post_draft,
     metadata,
     publish_post_draft,
@@ -36,6 +39,9 @@ async def store_post(
     chat_id: Annotated[UUID, Header(alias="X-Chat-ID")],
     file_name: Annotated[str, Header(alias="X-File-Name", max_length=2048)],
     caption: Annotated[str, Header(alias="X-Telegram-Caption", max_length=16384)],
+    media_type: Annotated[
+        Literal["image", "file"], Header(alias="X-Draft-Media-Type")
+    ] = "image",
 ):
     """Save immutable image+Markdown caption in Wai. Never contacts Telegram."""
     try:
@@ -47,8 +53,32 @@ async def store_post(
             request.stream(),
             unquote(file_name),
             unquote(caption),
+            image_only=media_type == "image",
         )
         return metadata(draft)
+    except PostDraftError as error:
+        raise HTTPException(error.status_code, str(error)) from None
+
+
+@router.get("/{draft_id}/download")
+async def download_draft(draft_id: UUID, token: str, db: Database):
+    """Short-lived, single-file capability issued only to the draft's owner."""
+    try:
+        user_id = draft_download_owner(token, draft_id)
+        if not await db.scalar(
+            select(User.id).where(User.id == user_id, User.is_active.is_(True))
+        ):
+            raise PostDraftError(404, "Post draft not found")
+        draft = await get_post_draft(db, user_id, draft_id)
+        return Response(
+            draft.media,
+            media_type=draft.mime_type,
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(draft.file_name, safe='')}",
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
     except PostDraftError as error:
         raise HTTPException(error.status_code, str(error)) from None
 

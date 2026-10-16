@@ -857,6 +857,22 @@ class TestSendFile:
 # ---------------------------------------------------------------------------
 
 
+async def test_draft_download_enforces_limit_even_with_wrong_content_length(tmp_path):
+    from app.services.messaging_service import _download_url_to_path
+
+    target = tmp_path / "contract.docx"
+    with (
+        patch("app.services.messaging_service._validate_url", return_value=None),
+        patch(
+            "app.services.messaging_service.httpx.AsyncClient",
+            return_value=_FakeHTTPClient([b"abc", b"def"], content_length=1),
+        ),
+        pytest.raises(ValueError, match="exceeds"),
+    ):
+        await _download_url_to_path("https://example.com/doc.pdf", target, max_bytes=4)
+    assert target.read_bytes() == b"abc"
+
+
 class TestReplyToMessage:
     async def test_reply_success(self, db_session, test_user):
         from app.services.messaging_service import reply_to_message

@@ -1,29 +1,27 @@
 #!/usr/bin/env python3
-"""Compatibility entry point: Telegram cannot sync photo/file draft attachments."""
+"""Upload a local file+text to Wai's MCP-visible draft storage; never send."""
 
-import sys
 from pathlib import Path
+from uuid import UUID
 
-ERROR = (
-    "Telegram rejects photo and file attachments in server-synced drafts "
-    "(MEDIA_INVALID). Nothing was uploaded or sent. Use prepare_post_draft.py "
-    "to keep the text and media together locally, and save only the text "
-    "through the save_draft MCP tool."
-)
+from post_draft import DraftClient, main
 
 
 def save_draft_file(
     path: Path,
-    caption: str | None = None,
+    caption: str,
     *,
+    draft_id: str,
     chat_id: str,
-    base_url: str,
-    api_key: str,
+    base_url: str | None = None,
+    api_key: str | None = None,
 ) -> dict:
-    """Fail before network access, including for callers of the old helper."""
-    raise ValueError(ERROR)
+    """Store immutable content, then verify the recipient, caption and original bytes."""
+    client = DraftClient(base_url=base_url, api_key=api_key)
+    return client.save(
+        str(UUID(draft_id)), str(UUID(chat_id)), path, caption, media_type="file"
+    )
 
 
 if __name__ == "__main__":
-    print(ERROR, file=sys.stderr)
-    sys.exit(1)
+    main(media_type="file")

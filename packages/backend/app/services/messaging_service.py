@@ -317,12 +317,13 @@ async def save_draft(
 
 DRAFT_MEDIA_UNSUPPORTED = (
     "Telegram does not support photo or file attachments in server-synced drafts. "
-    "Save the text with save_draft and keep the media with the local review draft "
-    "until sending is explicitly authorized."
+    "Use save_file_draft to keep text and attachment together in Wai without sending."
 )
 
 
-async def _download_url_to_path(file_url: str, path: Path) -> None:
+async def _download_url_to_path(
+    file_url: str, path: Path, *, max_bytes: int | None = None
+) -> None:
     """Download a remote file with SSRF and redirect validation."""
     await asyncio.to_thread(_validate_url, file_url)
     settings = get_settings()
@@ -347,10 +348,14 @@ async def _download_url_to_path(file_url: str, path: Path) -> None:
                     continue
 
                 response.raise_for_status()
+                size = 0
                 with path.open("wb") as output:
                     async for chunk in response.aiter_bytes(
                         chunk_size=settings.media_download_chunk_bytes
                     ):
+                        size += len(chunk)
+                        if max_bytes is not None and size > max_bytes:
+                            raise ValueError("Draft attachment exceeds 10 MiB")
                         output.write(chunk)
                 return
 

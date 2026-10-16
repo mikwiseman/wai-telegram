@@ -51,6 +51,13 @@ from app.services.file_browse_service import (
 from app.services.file_search_service import find_files
 from app.services.inbox_service import get_inbox
 from app.services.search_service import semantic_search
+from app.services.post_draft_service import (
+    PostDraftError,
+    file_draft_metadata,
+    get_post_draft,
+    list_file_drafts,
+    save_file_draft_from_url,
+)
 from app.services.telegram_links import (
     build_media_download_url,
     build_telegram_message_url,
@@ -292,6 +299,55 @@ TOOL_DEFINITIONS = (
         },
     ),
     ToolDefinition(
+        "save_file_draft",
+        "Save an immutable text+file draft in Wai from a downloadable URL (up to 10 MiB). "
+        "Never sends or contacts Telegram; not a native Telegram cloud draft. "
+        "Use a fresh draft_id UUID; retry the same ID with identical content after a timeout. "
+        "Returns recipient, actual filename, byte count, SHA-256 and a private download link. "
+        "For local files use the skill's authenticated upload helper, then get_file_draft.",
+        {
+            "type": "object",
+            "properties": {
+                "draft_id": {"type": "string", "format": "uuid"},
+                "chat_id": {"type": "string", "format": "uuid"},
+                "text": {"type": "string", "minLength": 1},
+                "file_url": {"type": "string", "format": "uri"},
+                "file_name": {"type": "string", "minLength": 1},
+            },
+            "required": ["draft_id", "chat_id", "text", "file_url", "file_name"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        "get_file_draft",
+        "Read a saved Wai text+file draft and refresh its private download link. "
+        "Returns actual stored attachment metadata and sent status. Does not send or contact Telegram.",
+        {
+            "type": "object",
+            "properties": {"draft_id": {"type": "string", "format": "uuid"}},
+            "required": ["draft_id"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        "list_file_drafts",
+        "List the owner's unsubmitted Wai text+file drafts, optionally for one chat. "
+        "These are distinct from Telegram's native text-only list_drafts. Never sends.",
+        {
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string", "format": "uuid"},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 20,
+                },
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
         "prepare_media",
         "Idempotently fetch and process the original Telegram media for one "
         "message, and report progress. Returns status, byte_offset and "
@@ -362,7 +418,11 @@ _DEFINITION_BY_NAME = {definition.name: definition for definition in TOOL_DEFINI
 # Reading is free. A draft appears in Telegram on the other side, so it needs its
 # own permission — narrower than 'write', which also buys sending. Fetching and
 # processing media only fills our own cache, like sync, and stays read-level.
-TOOL_SCOPES = {"save_draft": "draft", "clear_draft": "draft"}
+TOOL_SCOPES = {
+    "save_draft": "draft",
+    "clear_draft": "draft",
+    "save_file_draft": "draft",
+}
 
 
 def required_scope(name: str) -> str | None:
@@ -1070,6 +1130,43 @@ async def _list_drafts(
     return await list_telegram_drafts(db, user_id)
 
 
+async def _save_file_draft(
+    db: AsyncSession, user_id: UUID, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    draft = await save_file_draft_from_url(
+        db,
+        user_id,
+        _required_uuid(arguments, "draft_id"),
+        _required_uuid(arguments, "chat_id"),
+        _required_text(arguments, "file_url"),
+        _required_text(arguments, "file_name"),
+        _required_text(arguments, "text"),
+    )
+    return file_draft_metadata(draft)
+
+
+async def _get_file_draft(
+    db: AsyncSession, user_id: UUID, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    return file_draft_metadata(
+        await get_post_draft(db, user_id, _required_uuid(arguments, "draft_id"))
+    )
+
+
+async def _list_file_drafts(
+    db: AsyncSession, user_id: UUID, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    limit = arguments.get("limit", 20)
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise ToolInputError("limit must be an integer between 1 and 100")
+    chat_id = (
+        _required_uuid(arguments, "chat_id")
+        if arguments.get("chat_id") is not None
+        else None
+    )
+    return await list_file_drafts(db, user_id, chat_id, limit)
+
+
 async def _clear_draft(
     db: AsyncSession, user_id: UUID, arguments: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1474,6 +1571,9 @@ _HANDLERS: dict[str, ToolHandler] = {
     "get_message": _get_message,
     "list_drafts": _list_drafts,
     "save_draft": _save_draft,
+    "save_file_draft": _save_file_draft,
+    "get_file_draft": _get_file_draft,
+    "list_file_drafts": _list_file_drafts,
     "clear_draft": _clear_draft,
     "prepare_media": _prepare_media,
     "download_media": _download_media,
@@ -1501,4 +1601,7 @@ async def execute_data_tool(
     ).scalar_one_or_none()
     if active_user_id is None:
         raise ToolInputError("User is inactive")
-    return await _HANDLERS[name](db, user_id, arguments)
+    try:
+        return await _HANDLERS[name](db, user_id, arguments)
+    except PostDraftError as exc:
+        raise ToolInputError(str(exc)) from None
