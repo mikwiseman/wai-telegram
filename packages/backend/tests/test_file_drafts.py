@@ -228,7 +228,9 @@ async def test_file_drafts_are_owner_scoped_and_draft_access_is_required(
     assert denied.status_code == 403
 
 
-@pytest.mark.parametrize("content", [b"", b"x" * (10 * 1024 * 1024 + 1)])
+@pytest.mark.parametrize(
+    "content", [b"", b"x" * (10 * 1024 * 1024 + 1)], ids=["empty", "oversize"]
+)
 async def test_empty_or_oversize_file_rejected(
     auth_client, db_session, test_user, content
 ):
