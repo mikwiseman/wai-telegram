@@ -2,6 +2,8 @@
 
 import hashlib
 import base64
+import re
+from pathlib import Path
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 from urllib.parse import quote
@@ -15,6 +17,16 @@ from tests.factories import TelegramChatFactory, UserFactory
 DOCUMENT = b"PK\x03\x04test-docx-content"
 NAME = "Договор.docx"
 TEXT = "Евгений, привет!\n\nПравки в приложении"
+
+
+def test_nginx_accepts_encoded_file_limit_and_keeps_download_tokens_private():
+    config = (Path(__file__).parents[3] / "nginx/telegram-ai.conf").read_text()
+    mcp = config.split("location = /mcp {", 1)[1].split("}", 1)[0]
+    limit_mib = int(re.search(r"client_max_body_size (\d+)m;", mcp)[1])
+    encoded_limit = 4 * ((10 * 1024 * 1024 + 2) // 3)
+    assert limit_mib * 1024 * 1024 > encoded_limit + 2048
+    download = config.split("location ~ ^/api/v1/post-drafts/", 1)[1].split("}", 1)[0]
+    assert "/download$" in download and "access_log off;" in download
 
 
 async def chat_for(db, user):
