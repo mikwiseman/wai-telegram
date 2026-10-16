@@ -264,7 +264,7 @@ async def list_file_drafts(
 
 
 async def publish_post_draft(
-    db: AsyncSession, user_id: UUID, draft_id: UUID
+    db: AsyncSession, user_id: UUID, draft_id: UUID, *, as_document: bool = False
 ) -> PostDraft:
     draft = await get_post_draft(db, user_id, draft_id)
     if draft.status == "published":
@@ -292,7 +292,13 @@ async def publish_post_draft(
             path = Path(work) / draft.file_name
             path.write_bytes(draft.media)
             result = await _send_file_path(
-                db, user_id, draft.chat_id, path, draft.caption, chat
+                db,
+                user_id,
+                draft.chat_id,
+                path,
+                draft.caption,
+                chat,
+                **({"force_document": True} if as_document else {}),
             )
     except Exception:
         draft.status = "unknown"

@@ -1205,7 +1205,9 @@ async def _send_file_draft(
 ) -> dict[str, Any]:
     if arguments.get("approve") is not True:
         raise ToolInputError("Sending requires explicit user approval and approve=true")
-    draft = await publish_post_draft(db, user_id, _required_uuid(arguments, "draft_id"))
+    draft = await publish_post_draft(
+        db, user_id, _required_uuid(arguments, "draft_id"), as_document=True
+    )
     return file_draft_metadata(draft)
 
 

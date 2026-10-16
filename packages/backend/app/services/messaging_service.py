@@ -485,6 +485,8 @@ async def _send_file_path(
     path: Path,
     caption: str | None,
     chat: TelegramChat | None = None,
+    *,
+    force_document: bool = False,
 ) -> dict:
     if chat_id == "me" and caption and len(caption.encode("utf-16-le")) // 2 > 1024:
         raise ValueError("Saved Messages file caption must be at most 1024 characters")
@@ -499,6 +501,8 @@ async def _send_file_path(
         options = (
             {"force_document": True, "parse_mode": None} if chat_id == "me" else {}
         )
+        if force_document:
+            options["force_document"] = True
         result = await client.send_file(
             entity, str(path), caption=caption, file_name=path.name, **options
         )

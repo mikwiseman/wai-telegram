@@ -267,7 +267,8 @@ async def test_mcp_send_requires_write_and_explicit_approval_and_sends_once(
             test_user, scopes={"read", "write"}
         )
 
-        async def send(db, user_id, chat_id, path, caption, target):
+        async def send(db, user_id, chat_id, path, caption, target, *, force_document):
+            assert force_document is True
             assert (
                 chat_id == chat.id and path.read_bytes() == DOCUMENT and caption == TEXT
             )
