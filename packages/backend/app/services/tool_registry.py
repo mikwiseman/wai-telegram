@@ -56,6 +56,7 @@ from app.services.post_draft_service import (
     file_draft_metadata,
     get_post_draft,
     list_file_drafts,
+    publish_post_draft,
     save_file_draft_from_url,
 )
 from app.services.telegram_links import (
@@ -348,6 +349,22 @@ TOOL_DEFINITIONS = (
         },
     ),
     ToolDefinition(
+        "send_file_draft",
+        "Send the exact stored text and attachment to the draft's recipient. "
+        "Requires write scope, approve=true, and the user's explicit instruction to send this reviewed draft. "
+        "Creating or reviewing a draft is not permission to send. Already sent IDs are not resent; "
+        "if status is publishing/unknown inspect the recipient history rather than retrying with a new ID.",
+        {
+            "type": "object",
+            "properties": {
+                "draft_id": {"type": "string", "format": "uuid"},
+                "approve": {"type": "boolean", "const": True},
+            },
+            "required": ["draft_id", "approve"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
         "prepare_media",
         "Idempotently fetch and process the original Telegram media for one "
         "message, and report progress. Returns status, byte_offset and "
@@ -422,6 +439,7 @@ TOOL_SCOPES = {
     "save_draft": "draft",
     "clear_draft": "draft",
     "save_file_draft": "draft",
+    "send_file_draft": "write",
 }
 
 
@@ -1167,6 +1185,15 @@ async def _list_file_drafts(
     return await list_file_drafts(db, user_id, chat_id, limit)
 
 
+async def _send_file_draft(
+    db: AsyncSession, user_id: UUID, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    if arguments.get("approve") is not True:
+        raise ToolInputError("Sending requires explicit user approval and approve=true")
+    draft = await publish_post_draft(db, user_id, _required_uuid(arguments, "draft_id"))
+    return file_draft_metadata(draft)
+
+
 async def _clear_draft(
     db: AsyncSession, user_id: UUID, arguments: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1574,6 +1601,7 @@ _HANDLERS: dict[str, ToolHandler] = {
     "save_file_draft": _save_file_draft,
     "get_file_draft": _get_file_draft,
     "list_file_drafts": _list_file_drafts,
+    "send_file_draft": _send_file_draft,
     "clear_draft": _clear_draft,
     "prepare_media": _prepare_media,
     "download_media": _download_media,

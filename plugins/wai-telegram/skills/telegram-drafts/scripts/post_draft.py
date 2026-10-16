@@ -102,7 +102,7 @@ class DraftClient:
 def main(*, media_type="image"):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    save = commands.add_parser("save", help="Store caption and image in Wai without sending")
+    save = commands.add_parser("save", help="Store text and attachment in Wai without sending")
     save.add_argument(
         "--id", required=True, type=UUID, help="Fresh UUID; reuse exactly after a timeout"
     )

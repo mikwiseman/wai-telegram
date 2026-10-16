@@ -127,6 +127,7 @@ async def test_tools_api_lists_all_shared_data_tools(auth_client):
         "save_file_draft",
         "get_file_draft",
         "list_file_drafts",
+        "send_file_draft",
         "get_inbox",
         "clear_draft",
         "search_messages",

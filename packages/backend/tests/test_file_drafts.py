@@ -201,3 +201,51 @@ async def test_empty_or_oversize_file_rejected(
     chat = await chat_for(db_session, test_user)
     response = await put_file(auth_client, chat, uuid4(), content)
     assert response.status_code in {400, 413}
+
+
+async def test_mcp_send_requires_write_and_explicit_approval_and_sends_once(
+    app, client, auth_client, db_session, test_user
+):
+    chat = await chat_for(db_session, test_user)
+    draft_id = uuid4()
+    assert (await put_file(auth_client, chat, draft_id)).status_code == 200
+    arguments = {"draft_id": str(draft_id)}
+    with patch(
+        "app.services.post_draft_service._send_file_path", new_callable=AsyncMock
+    ) as sender:
+        for approved in (None, False, "true"):
+            response = await auth_client.post(
+                "/api/v1/tools/send_file_draft",
+                json={"arguments": {**arguments, "approve": approved}},
+            )
+            assert response.status_code == 400
+        app.dependency_overrides[get_auth_context] = lambda: AuthContext(
+            test_user, scopes={"read", "draft"}
+        )
+        denied = await client.post(
+            "/api/v1/tools/send_file_draft",
+            json={"arguments": {**arguments, "approve": True}},
+        )
+        assert denied.status_code == 403
+        sender.assert_not_awaited()
+
+        app.dependency_overrides[get_auth_context] = lambda: AuthContext(
+            test_user, scopes={"read", "write"}
+        )
+
+        async def send(db, user_id, chat_id, path, caption, target):
+            assert (
+                chat_id == chat.id and path.read_bytes() == DOCUMENT and caption == TEXT
+            )
+            return {"telegram_message_id": 123}
+
+        sender.side_effect = send
+        for _ in range(2):
+            response = await client.post(
+                "/api/v1/tools/send_file_draft",
+                json={"arguments": {**arguments, "approve": True}},
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["sent"] is True
+            assert response.json()["telegram_message_id"] == 123
+        sender.assert_awaited_once()

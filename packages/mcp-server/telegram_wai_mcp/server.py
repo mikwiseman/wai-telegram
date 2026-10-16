@@ -1557,7 +1557,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent] |
             )
             return format_draft_result(result)
 
-        elif name in {"save_file_draft", "get_file_draft", "list_file_drafts"}:
+        elif name in {"save_file_draft", "get_file_draft", "list_file_drafts", "send_file_draft"}:
             result = await api.execute_data_tool(name, dict(args))
             content = [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
             items = result.get("drafts", []) if name == "list_file_drafts" else [result]

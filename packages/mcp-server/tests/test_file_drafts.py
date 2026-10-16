@@ -6,7 +6,9 @@ from telegram_wai_mcp import server
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["save_file_draft", "get_file_draft", "list_file_drafts"])
+@pytest.mark.parametrize(
+    "name", ["save_file_draft", "get_file_draft", "list_file_drafts", "send_file_draft"]
+)
 async def test_file_draft_tools_return_actual_attachment_and_forward_arguments(name):
     api = AsyncMock()
     api.base_url = "https://telegram.waiwai.is"
