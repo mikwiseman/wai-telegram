@@ -149,7 +149,7 @@ NON_DATA_TOOLS = [
 
 
 def _data_tools() -> list[dict]:
-    from app.services.tool_registry import TOOL_DEFINITIONS
+    from app.services.tool_registry import TOOL_DEFINITIONS, required_scope
 
     return [
         {
@@ -158,6 +158,7 @@ def _data_tools() -> list[dict]:
             "input_schema": definition.parameters,
         }
         for definition in TOOL_DEFINITIONS
+        if required_scope(definition.name) != "write"
     ]
 
 
@@ -184,9 +185,17 @@ async def execute_tool(tool_name: str, tool_input: dict, context: AgentContext) 
     """
     logger.info(f"Executing tool: {tool_name} for user {context.user_id}")
 
-    from app.services.tool_registry import _DEFINITION_BY_NAME, execute_data_tool
+    from app.services.tool_registry import (
+        _DEFINITION_BY_NAME,
+        execute_data_tool,
+        required_scope,
+    )
 
     if tool_name in _DEFINITION_BY_NAME:
+        if required_scope(tool_name) == "write":
+            return (
+                "Sending is available only through the explicitly approved MCP workflow"
+            )
         from app.core.database import get_db_context
 
         async with get_db_context() as db:

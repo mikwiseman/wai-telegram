@@ -13,11 +13,11 @@ from uuid import UUID
 
 
 class DraftClient:
-    def __init__(self):
-        self.origin = os.environ.get("TELEGRAM_AI_URL", "https://telegram.waiwai.is").rstrip("/")
+    def __init__(self, *, base_url=None, api_key=None):
+        self.origin = (base_url or os.environ.get("TELEGRAM_AI_URL", "https://telegram.waiwai.is")).rstrip("/")
         if urlsplit(self.origin).scheme != "https":
             raise ValueError("Wai Telegram URL must use HTTPS")
-        self.key = os.environ.get("TELEGRAM_AI_KEY")
+        self.key = api_key or os.environ.get("TELEGRAM_AI_KEY")
         if not self.key:
             raise ValueError("Set TELEGRAM_AI_KEY through the configured secure environment")
 
@@ -42,9 +42,9 @@ class DraftClient:
     def read(self, draft_id):
         return json.loads(self.request(draft_id))
 
-    def save(self, draft_id, chat_id, file, caption):
+    def save(self, draft_id, chat_id, file, caption, *, media_type="image"):
         if not file.is_file() or not 0 < file.stat().st_size <= 10 * 1024 * 1024:
-            raise ValueError("Choose one nonempty JPEG/PNG file up to 10 MiB")
+            raise ValueError("Choose one nonempty attachment up to 10 MiB")
         if not caption.strip() or len(caption.encode("utf-16-le")) // 2 > 1024:
             raise ValueError("Caption must contain 1–1024 UTF-16 characters")
         content = file.read_bytes()
@@ -58,6 +58,7 @@ class DraftClient:
                     "X-Chat-ID": chat_id,
                     "X-File-Name": quote(file.name),
                     "X-Telegram-Caption": quote(caption),
+                    "X-Draft-Media-Type": media_type,
                 },
             )
         )
@@ -98,10 +99,10 @@ class DraftClient:
         )
 
 
-def main():
+def main(*, media_type="image"):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    save = commands.add_parser("save", help="Store caption and image in Wai without sending")
+    save = commands.add_parser("save", help="Store text and attachment in Wai without sending")
     save.add_argument(
         "--id", required=True, type=UUID, help="Fresh UUID; reuse exactly after a timeout"
     )
@@ -126,6 +127,7 @@ def main():
                 str(args.chat_id),
                 args.file.expanduser(),
                 args.caption_file.expanduser().read_text().strip(),
+                media_type=media_type,
             )
             args.receipt.parent.mkdir(parents=True, exist_ok=True)
             args.receipt.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")

@@ -1,17 +1,25 @@
 """Store complete posts without Telegram side effects; publish only on a separate call."""
 
+import base64
+import binascii
 import hashlib
+import mimetypes
 from collections.abc import AsyncIterator
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 from uuid import UUID
 
+import httpx
+import jwt
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.models.post_draft import PostDraft
 from app.services.messaging_service import (
+    _download_url_to_path,
     _get_chat,
     _outbound_directory,
     _sanitize_file_name,
@@ -19,6 +27,8 @@ from app.services.messaging_service import (
 )
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_FILE_BYTES = 10 * 1024 * 1024
+DRAFT_DOWNLOAD_TTL = timedelta(minutes=15)
 
 
 class PostDraftError(ValueError):
@@ -57,6 +67,50 @@ def metadata(draft: PostDraft) -> dict:
     }
 
 
+def create_draft_download_token(
+    user_id: UUID, draft_id: UUID, *, expires_at: datetime | None = None
+) -> str:
+    return jwt.encode(
+        {
+            "typ": "wai-file-draft",
+            "sub": str(user_id),
+            "draft_id": str(draft_id),
+            "exp": expires_at or datetime.now(UTC) + DRAFT_DOWNLOAD_TTL,
+        },
+        get_settings().secret_key,
+        algorithm="HS256",
+    )
+
+
+def draft_download_owner(token: str, draft_id: UUID) -> UUID:
+    try:
+        claims = jwt.decode(
+            token,
+            get_settings().secret_key,
+            algorithms=["HS256"],
+            options={"require": ["typ", "sub", "draft_id", "exp"]},
+        )
+        if claims["typ"] != "wai-file-draft" or claims["draft_id"] != str(draft_id):
+            raise ValueError
+        return UUID(claims["sub"])
+    except (jwt.InvalidTokenError, ValueError, TypeError, KeyError):
+        raise PostDraftError(401, "Invalid or expired draft download token") from None
+
+
+def file_draft_metadata(draft: PostDraft) -> dict:
+    expiry = datetime.now(UTC) + DRAFT_DOWNLOAD_TTL
+    token = create_draft_download_token(draft.user_id, draft.id, expires_at=expiry)
+    return {
+        **metadata(draft),
+        "has_media": True,
+        "media_file_name": draft.file_name,
+        "media_mime_type": draft.mime_type,
+        "media_file_size": len(draft.media),
+        "media_download_url": f"/api/v1/post-drafts/{draft.id}/download?token={quote(token, safe='')}",
+        "download_url_expires_at": expiry.isoformat(),
+    }
+
+
 async def save_post_draft(
     db: AsyncSession,
     user_id: UUID,
@@ -65,6 +119,8 @@ async def save_post_draft(
     chunks: AsyncIterator[bytes],
     file_name: str,
     caption: str,
+    *,
+    image_only: bool = True,
 ) -> PostDraft:
     try:
         await _get_chat(db, user_id, chat_id)
@@ -73,18 +129,23 @@ async def save_post_draft(
     if not caption.strip() or len(caption.encode("utf-16-le")) // 2 > 1024:
         raise PostDraftError(400, "Caption must contain 1–1024 UTF-16 characters")
     data = bytearray()
+    limit = MAX_IMAGE_BYTES if image_only else MAX_FILE_BYTES
     async for chunk in chunks:
-        if len(data) + len(chunk) > MAX_IMAGE_BYTES:
-            raise PostDraftError(413, "Post image exceeds 10 MiB")
+        if len(data) + len(chunk) > limit:
+            raise PostDraftError(413, "Draft attachment exceeds 10 MiB")
         data.extend(chunk)
-    if data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"):
+    file_name = _sanitize_file_name(file_name)
+    if not image_only:
+        if not data:
+            raise PostDraftError(400, "Draft attachment must not be empty")
+        mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+    elif data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"):
         mime_type, suffixes = "image/jpeg", {".jpg", ".jpeg"}
     elif data.startswith(b"\x89PNG\r\n\x1a\n"):
         mime_type, suffixes = "image/png", {".png"}
     else:
         raise PostDraftError(400, "A JPEG or PNG image is required")
-    file_name = _sanitize_file_name(file_name)
-    if Path(file_name).suffix.lower() not in suffixes:
+    if image_only and Path(file_name).suffix.lower() not in suffixes:
         raise PostDraftError(400, "Image extension does not match its content")
     digest = hashlib.sha256(data).hexdigest()
 
@@ -122,8 +183,88 @@ async def save_post_draft(
     return draft
 
 
+async def save_file_draft_from_url(
+    db: AsyncSession,
+    user_id: UUID,
+    draft_id: UUID,
+    chat_id: UUID,
+    file_url: str,
+    file_name: str,
+    text: str,
+) -> PostDraft:
+    # Authorize the recipient before fetching any remote content.
+    try:
+        await _get_chat(db, user_id, chat_id)
+    except ValueError:
+        raise PostDraftError(404, "Chat not found") from None
+    with _outbound_directory() as work:
+        path = Path(work) / _sanitize_file_name(file_name)
+        try:
+            await _download_url_to_path(file_url, path, max_bytes=MAX_FILE_BYTES)
+        except httpx.HTTPError:
+            raise PostDraftError(
+                400, "Could not download the draft attachment"
+            ) from None
+        except ValueError as exc:
+            raise PostDraftError(400, str(exc)) from None
+
+        async def chunks():
+            with path.open("rb") as source:
+                while chunk := source.read(64 * 1024):
+                    yield chunk
+
+        return await save_post_draft(
+            db, user_id, draft_id, chat_id, chunks(), file_name, text, image_only=False
+        )
+
+
+async def save_file_draft_from_base64(
+    db: AsyncSession,
+    user_id: UUID,
+    draft_id: UUID,
+    chat_id: UUID,
+    encoded: str,
+    file_name: str,
+    text: str,
+) -> PostDraft:
+    if len(encoded) > ((MAX_FILE_BYTES + 2) // 3) * 4:
+        raise PostDraftError(413, "Draft attachment exceeds 10 MiB")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise PostDraftError(400, "file_base64 must contain valid base64") from None
+
+    async def chunks():
+        yield data
+
+    return await save_post_draft(
+        db, user_id, draft_id, chat_id, chunks(), file_name, text, image_only=False
+    )
+
+
+async def list_file_drafts(
+    db: AsyncSession, user_id: UUID, chat_id: UUID | None, limit: int
+) -> dict:
+    query = select(PostDraft).where(
+        PostDraft.user_id == user_id, PostDraft.status == "draft"
+    )
+    if chat_id is not None:
+        query = query.where(PostDraft.chat_id == chat_id)
+    rows = (
+        await db.scalars(
+            query.order_by(PostDraft.created_at.desc(), PostDraft.id.desc()).limit(
+                limit + 1
+            )
+        )
+    ).all()
+    return {
+        "drafts": [file_draft_metadata(draft) for draft in rows[:limit]],
+        "has_more": len(rows) > limit,
+    }
+
+
 async def publish_post_draft(
-    db: AsyncSession, user_id: UUID, draft_id: UUID
+    db: AsyncSession, user_id: UUID, draft_id: UUID, *, as_document: bool = False
 ) -> PostDraft:
     draft = await get_post_draft(db, user_id, draft_id)
     if draft.status == "published":
@@ -151,7 +292,13 @@ async def publish_post_draft(
             path = Path(work) / draft.file_name
             path.write_bytes(draft.media)
             result = await _send_file_path(
-                db, user_id, draft.chat_id, path, draft.caption, chat
+                db,
+                user_id,
+                draft.chat_id,
+                path,
+                draft.caption,
+                chat,
+                **({"force_document": True} if as_document else {}),
             )
     except Exception:
         draft.status = "unknown"

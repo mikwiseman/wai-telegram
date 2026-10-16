@@ -1,10 +1,12 @@
-"""Media preparation stays local; the obsolete upload entry point cannot send."""
+"""Local uploads preserve original bytes in Wai and cannot implicitly send."""
 
 import hashlib
+import base64
 import importlib.util
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -21,20 +23,60 @@ def load(name):
     return module
 
 
-def test_obsolete_uploader_fails_before_connecting(tmp_path):
+@pytest.mark.parametrize("downloaded", [b"document", b"wrong bytes"])
+def test_file_uploader_uses_verified_wai_storage_without_publishing(
+    tmp_path, monkeypatch, downloaded
+):
     uploader = load("save_draft_file")
-    path = tmp_path / "chart.jpg"
-    path.write_bytes(b"image")
-    with patch("http.client.HTTPSConnection") as connection:
-        with pytest.raises(ValueError, match="MEDIA_INVALID"):
-            uploader.save_draft_file(
-                path,
-                "Caption",
-                chat_id="34d62d3f-9070-4189-8f26-97bdf0158cd2",
-                base_url="https://telegram.waiwai.is",
-                api_key="unused",
+    path = tmp_path / "contract.docx"
+    path.write_bytes(b"document")
+    draft_id, chat_id = str(uuid4()), str(uuid4())
+    state = {
+        "id": draft_id,
+        "chat_id": chat_id,
+        "caption": "Caption",
+        "file_name": path.name,
+        "file_size": 8,
+        "sha256": hashlib.sha256(b"document").hexdigest(),
+        "status": "draft",
+        "sent": False,
+        "media_download_url": "/api/v1/post-drafts/file/download?token=private",
+    }
+
+    def response(body):
+        value = MagicMock()
+        value.__enter__.return_value = value
+        value.headers = {"Mcp-Session-Id": "test-session"}
+        value.read.return_value = body
+        return value
+
+    replies = [
+        response(json.dumps({"result": {"protocolVersion": "2025-11-05"}}).encode()),
+        response(b""),
+        response(json.dumps({"result": {"structuredContent": state}}).encode()),
+        response(json.dumps({"result": {"structuredContent": state}}).encode()),
+        response(downloaded),
+        response(b""),
+    ]
+    monkeypatch.setenv("TELEGRAM_AI_KEY", "test-key")
+    with patch.object(uploader, "urlopen", side_effect=replies) as request:
+        if downloaded == b"document":
+            result = uploader.save_draft_file(
+                path, "Caption", draft_id=draft_id, chat_id=chat_id
             )
-        connection.assert_not_called()
+            assert result["sent"] is False
+            assert result["readback_verified"] is True and result["transport"] == "mcp"
+        else:
+            with pytest.raises(ValueError, match="Readback differs"):
+                uploader.save_draft_file(
+                    path, "Caption", draft_id=draft_id, chat_id=chat_id
+                )
+    payloads = [
+        json.loads(c.args[0].data) for c in request.call_args_list if c.args[0].data
+    ]
+    calls = [p["params"] for p in payloads if p["method"] == "tools/call"]
+    assert [c["name"] for c in calls] == ["save_file_draft", "get_file_draft"]
+    assert base64.b64decode(calls[0]["arguments"]["file_base64"]) == b"document"
 
 
 def test_local_post_keeps_exact_caption_and_attachment(tmp_path):

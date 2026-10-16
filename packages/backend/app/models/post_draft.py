@@ -32,7 +32,7 @@ class PostDraft(Base):
     )
     caption: Mapped[str] = mapped_column(Text)
     file_name: Mapped[str] = mapped_column(String(200))
-    mime_type: Mapped[str] = mapped_column(String(32))
+    mime_type: Mapped[str] = mapped_column(String(255))
     media: Mapped[bytes] = mapped_column(LargeBinary)
     sha256: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(16), default="draft")

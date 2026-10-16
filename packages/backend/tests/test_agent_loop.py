@@ -104,6 +104,9 @@ def test_tool_definitions_convert_to_responses_api_schema():
         "get_message",
         "list_drafts",
         "save_draft",
+        "save_file_draft",
+        "get_file_draft",
+        "list_file_drafts",
         "prepare_media",
         "download_media",
         "get_message_content",
@@ -118,6 +121,18 @@ def test_tool_definitions_convert_to_responses_api_schema():
     converted = _responses_tools()
     assert all(tool["type"] == "function" for tool in converted)
     assert all(tool["parameters"]["type"] == "object" for tool in converted)
+
+
+async def test_background_agent_cannot_send_file_drafts():
+    assert "send_file_draft" not in {tool["name"] for tool in TOOLS}
+    with patch(
+        "app.services.tool_registry.execute_data_tool", new_callable=AsyncMock
+    ) as execute:
+        result = await execute_tool(
+            "send_file_draft", {"draft_id": "unused", "approve": True}, _context()
+        )
+    execute.assert_not_awaited()
+    assert "explicitly approved MCP" in result
 
 
 @pytest.mark.asyncio

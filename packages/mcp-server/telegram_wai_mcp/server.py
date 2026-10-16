@@ -1546,8 +1546,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent] |
             chat_id = _require_str(args, "chat_id")
             if "file_url" in args or "file_name" in args:
                 raise ValueError(
-                    "Telegram draft attachments are not supported. Save the text "
-                    "and keep the media with the local review draft."
+                    "Native Telegram draft attachments are not supported. Use save_file_draft "
+                    "to store text and attachment together in Wai without sending."
                 )
             text = _require_str(args, "text")
             tool_arguments = {"chat_id": chat_id, "text": text}
@@ -1556,6 +1556,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent] |
                 tool_arguments,
             )
             return format_draft_result(result)
+
+        elif name in {"save_file_draft", "get_file_draft", "list_file_drafts", "send_file_draft"}:
+            result = await api.execute_data_tool(name, dict(args))
+            content = [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+            items = result.get("drafts", []) if name == "list_file_drafts" else [result]
+            for item in items:
+                resource = _media_resource_link(item, _client_base_url(api))
+                if resource:
+                    resource.description = (
+                        "Private attachment stored in Wai; see draft sent/status fields"
+                    )
+                    content.append(resource)
+            return CallToolResult(content=content, structuredContent=result)
 
         elif name == "clear_draft":
             chat_id = _require_str(args, "chat_id")
