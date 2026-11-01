@@ -43,3 +43,25 @@ async def test_partial_provider_response_never_assigns_incomplete_batch():
     ):
         assert await embed_messages(db, [m.id for m in messages]) == 0
     assert all(m.embedding is None for m in messages)
+
+
+async def test_whitespace_only_messages_cannot_block_the_next_batch(
+    db_session, test_user
+):
+    from app.services.embedding_service import embed_unembedded_messages
+    from tests.factories import TelegramChatFactory, TelegramMessageFactory
+
+    chat = TelegramChatFactory.create(user_id=test_user.id)
+    db_session.add(chat)
+    await db_session.flush()
+    blank = TelegramMessageFactory.create(chat_id=chat.id, text="\n\t ")
+    message = TelegramMessageFactory.create(chat_id=chat.id, text="school")
+    db_session.add_all([blank, message])
+    await db_session.flush()
+    with patch(
+        "app.services.embedding_service.embed_messages",
+        new_callable=AsyncMock,
+        return_value=1,
+    ) as embed:
+        await embed_unembedded_messages(db_session, test_user.id, limit=1)
+    assert embed.call_args.args[1] == [message.id]

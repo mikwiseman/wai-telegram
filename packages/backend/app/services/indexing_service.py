@@ -18,7 +18,12 @@ def indexing_has_capacity() -> bool:
 
 
 async def get_indexing_status(db: AsyncSession, user_id: UUID) -> dict:
-    eligible = func.length(func.trim(func.coalesce(TelegramMessage.text, ""))) > 0
+    eligible = (
+        func.length(
+            func.trim(func.coalesce(TelegramMessage.text, ""), " \t\n\r\v\f\u00a0")
+        )
+        > 0
+    )
     counts = (
         (
             await db.execute(

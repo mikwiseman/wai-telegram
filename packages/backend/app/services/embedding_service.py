@@ -161,7 +161,7 @@ async def embed_unembedded_messages(
         .where(
             TelegramChat.user_id == user_id,
             TelegramChat.indexing_enabled.is_(True),
-            func.length(func.trim(TelegramMessage.text)) > 0,
+            func.length(func.trim(TelegramMessage.text, " \t\n\r\v\f\u00a0")) > 0,
             TelegramMessage.embedding.is_(None),
         )
         .limit(limit)
