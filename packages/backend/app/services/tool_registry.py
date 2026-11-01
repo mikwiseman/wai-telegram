@@ -233,7 +233,7 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "search_messages",
-        "Search synced messages, links, filenames, transcripts and extracted documents. Use mode=hybrid for a natural-language description and mode=exact for a known literal phrase. Filter by chat_types to restrict private chats, groups, supergroups or channels. Results are cursor-paginated.",
+        "Search indexed messages, links, filenames, transcripts and extracted documents from selected chats. History may still be loading; get_data_status reports coverage. Use mode=hybrid for a natural-language description and mode=exact for a known literal phrase. Filter by chat_types to restrict private chats, groups, supergroups or channels. Results are cursor-paginated.",
         {
             "type": "object",
             "properties": {
@@ -430,7 +430,8 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "get_data_status",
-        "Diagnostic account-wide counts, queue depths, cache usage and auth state. "
+        "Indexing coverage for selected chats, including incomplete history and pending embeddings. "
+        "Owners also receive service diagnostics. "
         "Can be expensive on large archives; not a prerequisite for reading or searching. "
         "Use get_inbox for conversation evidence and missing-latest-message checks.",
         {"type": "object", "properties": {}},
@@ -1491,6 +1492,12 @@ async def _get_inbox(
 async def _get_data_status(
     db: AsyncSession, user_id: UUID, _arguments: dict[str, Any]
 ) -> dict[str, Any]:
+    from app.services.indexing_service import get_indexing_status
+
+    coverage = await get_indexing_status(db, user_id)
+    account = await db.get(User, user_id)
+    if account is not None and account.invited_by_id is not None:
+        return {"checked_at": datetime.now(UTC).isoformat(), "indexing": coverage}
     chat_count = (
         await db.execute(
             select(func.count())
@@ -1579,6 +1586,7 @@ async def _get_data_status(
         }
     return {
         "checked_at": datetime.now(UTC).isoformat(),
+        "indexing": coverage,
         "chats": int(chat_count),
         "messages": int(message_count),
         "freshest_message_at": freshest_message.isoformat()

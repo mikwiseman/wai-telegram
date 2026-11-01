@@ -201,8 +201,10 @@ class TelegramListener:
             logger.warning(f"Unknown entity type for chat {chat_id_tg}: {type(entity)}")
             return None
 
+        account = await db.get(User, user_id)
         stmt = pg_insert(TelegramChat).values(
             user_id=user_id,
+            indexing_enabled=bool(account and account.invited_by_id is None),
             telegram_chat_id=chat_id_tg,
             access_hash=getattr(entity, "access_hash", None),
             chat_type=chat_type,
@@ -277,6 +279,9 @@ class TelegramListener:
                             raise
                         logger.warning(f"Could not auto-create chat {chat_id_tg}: {e}")
                         return
+
+                if not chat or not chat.indexing_enabled:
+                    return
 
                 try:
                     sender = await event.get_sender()
@@ -373,7 +378,7 @@ class TelegramListener:
                     )
                 )
             ).scalar_one_or_none()
-            if chat is None:
+            if chat is None or not chat.indexing_enabled:
                 logger.warning(
                     "Ignored edit for unknown chat %s and active user %s",
                     event.chat_id,

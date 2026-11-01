@@ -127,6 +127,26 @@ class ApiClient {
   }
 
   // Auth
+  async acceptInvitation(token: string) {
+    const response = await fetch(new URL('/api/v1/onboarding/accept', this.getBaseUrl()), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    })
+    const body = await response.json()
+    if (!response.ok) throw new Error(body.detail || 'Не удалось открыть приглашение')
+    return body as { access_token: string; refresh_token: string }
+  }
+
+  async selectIndexedChats(chatIds: string[]) {
+    return this.request<{ selected: number; job_id: string | null }>('PUT', '/api/v1/indexing/chats', {
+      body: { chat_ids: chatIds },
+    })
+  }
+
+  async getIndexingStatus() {
+    return this.request<IndexingStatus>('GET', '/api/v1/indexing/status')
+  }
+
   async login(email: string, password: string) {
     const formData = new URLSearchParams()
     formData.append('username', email)
@@ -196,7 +216,7 @@ class ApiClient {
     code: string,
     password?: string
   ) {
-    return this.request<{ success: boolean; telegram_user_id: number }>(
+    return this.request<{ success: boolean; telegram_user_id: number; access_token?: string | null; refresh_token?: string | null }>(
       'POST',
       '/api/v1/telegram/verify-code',
       { body: { phone_number, phone_code_hash, code, password } }
@@ -335,6 +355,8 @@ export const api = new ApiClient()
 
 // Types
 export interface Chat {
+  indexing_enabled?: boolean
+  history_synced_at?: string | null
   id: string
   telegram_chat_id: number
   chat_type: 'private' | 'group' | 'supergroup' | 'channel'
@@ -346,6 +368,12 @@ export interface Chat {
   last_message_text: string | null
   last_message_sender_name: string | null
   unread_count: number
+}
+
+export interface IndexingStatus {
+  pause_reason?: 'disk_space' | null
+  chats: { id: string; title: string; history_complete: boolean; messages: number; text_messages: number; indexed_texts: number; pending_media: number; failed_media?: number }[]
+  sync_status: string | null
 }
 
 export interface Message {

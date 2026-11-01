@@ -23,6 +23,9 @@ class UserSettings(Base):
 
     # Real-time
     realtime_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    embedding_backfill_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)

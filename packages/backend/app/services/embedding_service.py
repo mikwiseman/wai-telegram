@@ -7,7 +7,7 @@ import asyncio
 from collections import OrderedDict
 
 from openai import AsyncOpenAI
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -117,53 +117,34 @@ async def prepare_media_content_index(
 
 
 async def embed_messages(db: AsyncSession, message_ids: list[UUID]) -> int:
-    """Generate embeddings for messages. Returns count of embedded messages."""
-    if not message_ids:
-        return 0
-
-    # Fetch messages
-    result = await db.execute(
-        select(TelegramMessage).where(
-            TelegramMessage.id.in_(message_ids),
-            TelegramMessage.text.isnot(None),
-            TelegramMessage.embedding.is_(None),
-        )
-    )
-    messages = result.scalars().all()
-
-    if not messages:
-        return 0
-
-    # Prepare texts for embedding
-    texts = []
-    msg_indices = []
-    for i, msg in enumerate(messages):
-        if msg.text and msg.text.strip():
-            texts.append(msg.text[:8000])  # Truncate long messages
-            msg_indices.append(i)
-
-    if not texts:
-        return 0
-
-    # Batch embedding
+    """Bound both database reads and provider calls; failed rows remain retryable."""
     embedded_count = 0
-    for batch_start in range(0, len(texts), settings.embedding_batch_size):
-        batch_end = batch_start + settings.embedding_batch_size
-        batch_texts = texts[batch_start:batch_end]
-        batch_indices = msg_indices[batch_start:batch_end]
-
-        try:
-            embeddings = await generate_embeddings(batch_texts)
-            for j, embedding in enumerate(embeddings):
-                msg_idx = batch_indices[j]
-                messages[msg_idx].embedding = embedding
-                messages[msg_idx].embedded_at = datetime.now(UTC)
-                embedded_count += 1
-        except Exception as e:
-            logger.error(f"Error generating embeddings: {e}")
+    size = settings.embedding_batch_size
+    for start in range(0, len(message_ids), size):
+        result = await db.execute(
+            select(TelegramMessage)
+            .where(
+                TelegramMessage.id.in_(message_ids[start : start + size]),
+                TelegramMessage.text.isnot(None),
+                TelegramMessage.embedding.is_(None),
+            )
+            .with_for_update(skip_locked=True)
+        )
+        messages = [m for m in result.scalars().all() if m.text and m.text.strip()]
+        if not messages:
             continue
-
-    await db.flush()
+        try:
+            embeddings = await generate_embeddings([m.text[:8000] for m in messages])
+            if len(embeddings) != len(messages):
+                raise ValueError("Embedding provider returned an incomplete batch")
+        except Exception:
+            logger.warning("Embedding batch failed; rows remain pending for retry")
+            continue
+        for message, embedding in zip(messages, embeddings, strict=True):
+            message.embedding = embedding
+            message.embedded_at = datetime.now(UTC)
+        await db.flush()
+        embedded_count += len(messages)
     return embedded_count
 
 
@@ -179,7 +160,8 @@ async def embed_unembedded_messages(
         .join(TelegramChat)
         .where(
             TelegramChat.user_id == user_id,
-            TelegramMessage.text.isnot(None),
+            TelegramChat.indexing_enabled.is_(True),
+            func.length(func.trim(TelegramMessage.text)) > 0,
             TelegramMessage.embedding.is_(None),
         )
         .limit(limit)

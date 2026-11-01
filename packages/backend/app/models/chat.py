@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     Enum,
     ForeignKey,
@@ -49,6 +50,11 @@ class TelegramChat(Base):
     )
     last_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     total_messages_synced: Mapped[int] = mapped_column(Integer, default=0)
+    indexing_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+    history_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    history_cursor: Mapped[int | None] = mapped_column(BigInteger)
     last_message_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_message_sender_name: Mapped[str | None] = mapped_column(
         String(255), nullable=True

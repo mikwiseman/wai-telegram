@@ -1,4 +1,4 @@
-"""Single-user ownership invariants shared by startup and background jobs."""
+"""Owner and explicitly invited account invariants."""
 
 from uuid import UUID
 
@@ -14,12 +14,19 @@ class OwnerConfigurationError(RuntimeError):
 
 
 async def validate_active_owner(db: AsyncSession, owner_user_id: UUID) -> None:
-    active_ids = list(
-        (await db.execute(select(User.id).where(User.is_active.is_(True)))).scalars()
+    users = (
+        (await db.execute(select(User).where(User.is_active.is_(True)))).scalars().all()
     )
-    if active_ids != [owner_user_id]:
+    if not any(user.id == owner_user_id for user in users) or any(
+        user.id != owner_user_id
+        and (
+            user.invited_by_id != owner_user_id
+            or user.expected_telegram_user_id is None
+        )
+        for user in users
+    ):
         raise OwnerConfigurationError(
-            "Single-user invariant failed: exactly OWNER_USER_ID must be active"
+            "OWNER_USER_ID must be active; other active accounts must be explicitly invited by the owner"
         )
 
 

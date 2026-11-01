@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, Index, String, Text, text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -13,6 +13,12 @@ class User(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    invited_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    expected_telegram_user_id: Mapped[int | None] = mapped_column(
+        BigInteger, unique=True
+    )
+    invite_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
+    invite_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false"
     )
@@ -45,16 +51,6 @@ class User(Base):
     )
     api_keys: Mapped[list["ApiKey"]] = relationship(
         "ApiKey", back_populates="user", cascade="all, delete-orphan"
-    )
-
-    __table_args__ = (
-        Index(
-            "uq_users_single_active",
-            "is_active",
-            unique=True,
-            postgresql_where=text("is_active"),
-            sqlite_where=text("is_active = 1"),
-        ),
     )
 
 

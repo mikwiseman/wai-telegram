@@ -22,7 +22,9 @@ from app.core.config import get_settings
 from app.models.chat import ChatType, TelegramChat
 from app.models.message import MediaProcessingStatus, TelegramMessage
 from app.models.sync_job import SyncJob, SyncStatus
+from app.models.user import User
 from app.services.embedding_service import embed_messages
+from app.services.indexing_service import indexing_has_capacity
 from app.services.media_content_service import get_media_info
 from app.services.messaging_service import _resolve_chat_entity
 from app.services.rate_limiter import record_request
@@ -129,6 +131,8 @@ async def sync_chats(db: AsyncSession, user_id: UUID) -> list[TelegramChat]:
     """Sync user's chat list from Telegram using upsert for atomicity."""
     client = await get_client(user_id, db)
     chats = []
+    account = await db.get(User, user_id)
+    index_new_chats = bool(account and account.invited_by_id is None)
     try:
         record_request()  # Track iter_dialogs API call
 
@@ -148,6 +152,7 @@ async def sync_chats(db: AsyncSession, user_id: UUID) -> list[TelegramChat]:
 
             values = {
                 "user_id": user_id,
+                "indexing_enabled": index_new_chats,
                 # Store the canonical peer ID used by Telethon events. Raw
                 # entity IDs are positive for legacy groups and channels,
                 # while event.chat_id is negative (or -100-prefixed). Mixing
@@ -229,6 +234,8 @@ async def sync_messages(
     chat = result.scalar_one_or_none()
     if not chat:
         raise ValueError("Chat not found")
+    if not chat.indexing_enabled:
+        raise ValueError("Indexing is disabled for this chat")
 
     # Get job
     result = await db.execute(
@@ -250,7 +257,7 @@ async def sync_messages(
     batch_values = []
     batch_count = 0
     last_id = chat.last_message_id
-    inserted_message_ids: list[UUID] = []
+    oldest_seen_id = chat.history_cursor
 
     messages_seen = 0
 
@@ -260,6 +267,8 @@ async def sync_messages(
     # Deduplication is handled by the DB constraint. Every newly discovered media
     # message is persisted as pending and processed independently in the media queue.
     iter_kwargs = {"limit": limit, "wait_time": 0.5}
+    if limit is None and chat.history_synced_at is None and chat.history_cursor:
+        iter_kwargs["offset_id"] = chat.history_cursor
     total_reported = False
 
     try:
@@ -271,6 +280,7 @@ async def sync_messages(
         iterator = client.iter_messages(peer, **iter_kwargs)
         async for message in iterator:
             messages_seen += 1
+            oldest_seen_id = message.id
 
             # Report total from Telegram after first batch (Telethon populates iterator.total)
             if not total_reported and on_progress:
@@ -285,7 +295,7 @@ async def sync_messages(
             ):
                 continue
 
-            media_values = _media_values(message)
+            media_values = _media_values(message, queue_processing=True)
             metadata_values = extract_message_metadata(
                 message,
                 file_name=media_values["media_file_name"],
@@ -312,11 +322,15 @@ async def sync_messages(
 
             # Persist metadata only. Expensive content processing runs in background.
             if len(batch_values) >= settings.sync_batch_size:
+                if not indexing_has_capacity():
+                    raise RuntimeError(
+                        "History loading paused: insufficient free disk space"
+                    )
                 inserted_ids = await _insert_message_batch(
                     db,
                     batch_values,
                 )
-                inserted_message_ids.extend(inserted_ids)
+                await embed_messages(db, inserted_ids)
                 skipped = len(batch_values) - len(inserted_ids)
                 messages_synced -= skipped
 
@@ -330,7 +344,12 @@ async def sync_messages(
                 # Commit batch so progress is visible and work survives interruptions
                 job.messages_processed = messages_synced
                 job.last_processed_id = last_id
+                if limit is None and chat.history_synced_at is None:
+                    chat.history_cursor = oldest_seen_id
                 await db.commit()
+                await db.refresh(chat)
+                if not chat.indexing_enabled:
+                    raise ValueError("Indexing was paused for this chat")
 
                 # Progressive jittered delay — increases every N batches
                 progressive_extra = (
@@ -341,26 +360,24 @@ async def sync_messages(
 
         # Insert remaining batch
         if batch_values:
+            if not indexing_has_capacity():
+                raise RuntimeError(
+                    "History loading paused: insufficient free disk space"
+                )
             inserted_ids = await _insert_message_batch(
                 db,
                 batch_values,
             )
-            inserted_message_ids.extend(inserted_ids)
+            await embed_messages(db, inserted_ids)
             skipped = len(batch_values) - len(inserted_ids)
             messages_synced -= skipped
 
         if on_progress:
             on_progress(messages_seen, None)
 
-        # Best-effort embedding generation for newly inserted text messages.
-        # Embedding failures should not fail message sync.
-        if inserted_message_ids:
-            try:
-                await embed_messages(db, inserted_message_ids)
-            except Exception as e:
-                logger.exception(
-                    f"Embedding step failed after sync for chat {chat_id}: {e}"
-                )
+        if limit is None:
+            chat.history_synced_at = datetime.now(UTC)
+            chat.history_cursor = None
 
         # Update chat and job
         chat.last_message_id = last_id

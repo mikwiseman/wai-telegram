@@ -5,7 +5,9 @@ from app.api.v1 import (
     bot_webhook,
     chats,
     digests,
+    indexing,
     messages,
+    onboarding,
     post_drafts,
     search,
     settings,
@@ -17,6 +19,8 @@ from app.api.v1 import (
 api_router = APIRouter()
 
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
+api_router.include_router(onboarding.router, prefix="/onboarding", tags=["onboarding"])
+api_router.include_router(indexing.router, prefix="/indexing", tags=["indexing"])
 api_router.include_router(telegram.router, prefix="/telegram", tags=["telegram"])
 api_router.include_router(bot_webhook.router, prefix="/bot", tags=["bot"])
 api_router.include_router(chats.router, prefix="/chats", tags=["chats"])

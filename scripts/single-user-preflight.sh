@@ -132,6 +132,11 @@ psql_query() {
 }
 
 if [ "$mode" = "initial-cutover" ]; then
+    invited=$(psql_query "SELECT count(*) FROM users u WHERE to_jsonb(u)->>'invited_by_id' IS NOT NULL;")
+    [ "$invited" = "0" ] || {
+        echo "Initial single-owner cutover is disabled after accounts have been invited" >&2
+        exit 1
+    }
     evidence=$(psql_query "
         WITH expected AS (SELECT :'owner'::uuid AS id),
         session_users AS (
@@ -170,17 +175,18 @@ else
     state=$(psql_query "
         WITH expected AS (SELECT :'owner'::uuid AS id)
         SELECT
-          (SELECT count(*) FROM users WHERE is_active IS TRUE) || '|' ||
+          (SELECT count(*) FROM users u, expected WHERE u.is_active IS TRUE AND u.id <> expected.id AND
+            (coalesce(to_jsonb(u)->>'invited_by_id', '') <> expected.id::text OR to_jsonb(u)->>'expected_telegram_user_id' IS NULL)) || '|' ||
           (SELECT count(*) FROM users, expected WHERE users.id = expected.id AND users.is_active IS TRUE) || '|' ||
-          (SELECT count(*) FROM api_keys, expected WHERE api_keys.user_id <> expected.id AND api_keys.is_active IS TRUE) || '|' ||
-          (SELECT count(*) FROM telegram_sessions, expected WHERE telegram_sessions.user_id <> expected.id AND (telegram_sessions.is_active IS TRUE OR telegram_sessions.session_string <> ''))
+          (SELECT count(*) FROM api_keys k JOIN users u ON u.id = k.user_id WHERE u.is_active IS FALSE AND k.is_active IS TRUE) || '|' ||
+          (SELECT count(*) FROM telegram_sessions s JOIN users u ON u.id = s.user_id WHERE u.is_active IS FALSE AND (s.is_active IS TRUE OR s.session_string <> ''))
         FROM expected;")
     IFS='|' read -r active_users owner_active archive_keys archive_sessions <<<"$state"
-    [ "$active_users|$owner_active|$archive_keys|$archive_sessions" = "1|1|0|0" ] || {
-        echo "Single-user production invariants failed" >&2
+    [ "$active_users|$owner_active|$archive_keys|$archive_sessions" = "0|1|0|0" ] || {
+        echo "Owner/invited-account production invariants failed" >&2
         exit 1
     }
-    echo "standard preflight: exactly OWNER_USER_ID is active and archive credentials are revoked"
+    echo "standard preflight: owner and explicitly invited accounts only; archive credentials revoked"
 fi
 
 echo "read-only infrastructure snapshot: media_mode=$media_mode cpu=$cpu_count memory_kib=$memory_kib media_bytes=$media_bytes bot_api_commit=$BOT_API_COMMIT"

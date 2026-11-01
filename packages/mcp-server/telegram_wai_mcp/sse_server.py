@@ -102,12 +102,18 @@ class SessionAuthMiddleware:
             await response(scope, receive, send)
             return
 
-        if not api_key and request_session_id:
-            api_key = srv.get_session_api_key(request_session_id)
+        if request_session_id:
+            bound_key = srv.get_session_api_key(request_session_id)
+            if api_key and bound_key and api_key != bound_key:
+                await Response("API key does not match this MCP session", status_code=403)(
+                    scope, receive, send
+                )
+                return
+            api_key = api_key or bound_key
 
         if api_key:
             scope["telegram_ai_api_key"] = api_key
-        elif not request_session_id and not os.environ.get("TELEGRAM_AI_KEY", "").strip():
+        else:
             response = Response(
                 "Missing API key. Use Authorization: Bearer <key> or ?key=... when initializing the MCP session.",
                 status_code=401,

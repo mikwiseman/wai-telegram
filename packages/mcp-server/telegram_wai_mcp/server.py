@@ -79,6 +79,8 @@ def _resolve_api_key(request: Request | None) -> str | None:
         if session_id:
             return get_session_api_key(session_id)
 
+        return None
+
     env_api_key = os.environ.get("TELEGRAM_AI_KEY", "").strip()
     return env_api_key or None
 

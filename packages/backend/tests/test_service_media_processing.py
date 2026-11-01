@@ -33,6 +33,7 @@ async def test_claim_is_atomic_and_prevents_duplicate_billable_work(
     test_user,
 ):
     chat = TelegramChat(
+        indexing_enabled=True,
         user_id=test_user.id,
         telegram_chat_id=123,
         chat_type="private",
@@ -68,6 +69,7 @@ async def test_claim_reuses_legacy_transcript_stored_in_text(
     test_user,
 ):
     chat = TelegramChat(
+        indexing_enabled=True,
         user_id=test_user.id,
         telegram_chat_id=124,
         chat_type="private",
@@ -423,6 +425,7 @@ async def test_content_checkpoint_persists_transcript_segments(
     test_user,
 ):
     chat = TelegramChat(
+        indexing_enabled=True,
         user_id=test_user.id,
         telegram_chat_id=812,
         chat_type="private",
@@ -508,6 +511,7 @@ async def test_content_checkpoint_persists_transcript_segments(
 async def test_index_stage_does_not_mutate_deactivated_archive(db_session, test_user):
     test_user.is_active = False
     chat = TelegramChat(
+        indexing_enabled=True,
         user_id=test_user.id,
         telegram_chat_id=814,
         chat_type="private",

@@ -40,6 +40,7 @@ class TelegramChatFactory:
             "telegram_chat_id": abs(hash(uuid4())) % 10**9,
             "chat_type": ChatType.PRIVATE,
             "title": f"Chat {uuid4().hex[:6]}",
+            "indexing_enabled": True,
             "created_at": datetime.now(UTC),
         }
         defaults.update(kwargs)

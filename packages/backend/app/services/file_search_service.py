@@ -118,6 +118,7 @@ async def find_files(
             .join(TelegramChat, TelegramChat.id == TelegramMessage.chat_id)
             .where(
                 TelegramChat.user_id == user_id,
+                TelegramChat.indexing_enabled.is_(True),
                 TelegramMessage.text.isnot(None),
                 TelegramMessage.text != "",
                 TelegramMessage.deleted_at.is_(None),

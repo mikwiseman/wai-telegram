@@ -113,7 +113,7 @@ async def recover_interrupted_media_stage(message_id: UUID, stage: str) -> bool:
             select(TelegramMessage.id)
             .join(TelegramChat, TelegramChat.id == TelegramMessage.chat_id)
             .join(User, User.id == TelegramChat.user_id)
-            .where(User.is_active.is_(True))
+            .where(User.is_active.is_(True), TelegramChat.indexing_enabled.is_(True))
         )
         if stage == "process":
             recovered = (
@@ -233,7 +233,7 @@ async def _find_pending_and_reap_stale() -> list[UUID]:
             select(TelegramMessage.id)
             .join(TelegramChat, TelegramChat.id == TelegramMessage.chat_id)
             .join(User, User.id == TelegramChat.user_id)
-            .where(User.is_active.is_(True))
+            .where(User.is_active.is_(True), TelegramChat.indexing_enabled.is_(True))
         )
         # Recover only very old dispatch claims. Normal broker backlog remains
         # queued; duplicate delivery is still protected by the processing claim.
@@ -325,7 +325,11 @@ async def _find_pending_and_reap_stale() -> list[UUID]:
             select(TelegramMessage.id)
             .join(TelegramChat, TelegramChat.id == TelegramMessage.chat_id)
             .join(User, User.id == TelegramChat.user_id)
-            .where(dispatchable, User.is_active.is_(True))
+            .where(
+                dispatchable,
+                User.is_active.is_(True),
+                TelegramChat.indexing_enabled.is_(True),
+            )
             .order_by(
                 media_priority.asc(),
                 TelegramMessage.sent_at.desc(),

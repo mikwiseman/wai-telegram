@@ -279,13 +279,13 @@ async def request_code(phone_number: str) -> tuple[TelegramClient, str, str]:
         result = await client.send_code_request(phone_number)
         code_type = _get_code_type_name(result)
         logger.info(
-            f"Code requested for {phone_number}: type={code_type}, "
+            f"Telegram login code requested: type={code_type}, "
             f"timeout={getattr(result, 'timeout', None)}s"
         )
         return client, result.phone_code_hash, code_type
     except FloodWaitError as e:
         wait_time = int(e.seconds * settings.flood_wait_multiplier)
-        logger.warning(f"FloodWait: need to wait {wait_time}s for {phone_number}")
+        logger.warning(f"Telegram login rate limited: wait {wait_time}s")
         await client.disconnect()
         raise ValueError(f"Too many attempts. Please wait {wait_time} seconds.")
     except Exception:
@@ -350,6 +350,22 @@ async def save_session(
     db.add(new_session)
     await db.flush()
     return new_session
+
+
+async def start_listener(user_id: UUID) -> None:
+    """Best-effort wakeup; the existing health check retries missed notifications."""
+    redis = aioredis.from_url(
+        settings.redis_url, socket_connect_timeout=1, socket_timeout=1
+    )
+    try:
+        await redis.publish(
+            "listener:cmd:global",
+            json.dumps({"command": "start_user", "user_id": str(user_id)}),
+        )
+    except Exception:
+        logger.warning("Listener wakeup deferred to health check")
+    finally:
+        await redis.aclose()
 
 
 async def disconnect_client(user_id: UUID) -> None:
