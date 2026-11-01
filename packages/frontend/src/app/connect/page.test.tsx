@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ConnectPage from './page'
 import { api } from '@/lib/api'
 
-const auth = vi.hoisted(() => ({ user: null as null | { id: string }, isLoading: false, acceptInvitation: vi.fn(), completeTelegramLogin: vi.fn() }))
+const auth = vi.hoisted(() => ({ user: null as null | { id: string; auto_index_since?: string }, isLoading: false, acceptInvitation: vi.fn(), completeTelegramLogin: vi.fn() }))
 vi.mock('@/lib/auth', () => ({ useAuth: Object.assign(() => auth, { getState: () => auth }) }))
 vi.mock('@/lib/api', () => ({ api: {
   getTelegramSession: vi.fn(), refreshChats: vi.fn(), getChats: vi.fn(), requestCode: vi.fn(),
@@ -30,6 +30,35 @@ beforeEach(() => {
 })
 
 describe('Personal Telegram connection', () => {
+  it('connects automatic accounts directly to the plugin after Telegram login', async () => {
+    window.history.replaceState({}, '', '/connect#invite=automatic-invitation')
+    auth.acceptInvitation.mockImplementation(async () => {
+      auth.user = { id: 'guest', auto_index_since: '2026-01-01T00:00:00Z' }
+    })
+    const user = userEvent.setup()
+    render(<ConnectPage />)
+    await screen.findByRole('heading', { name: 'Подключи свой Telegram' })
+    expect(screen.getByText(/Все чаты.*1 января 2026/)).toBeVisible()
+    expect(screen.queryByText('Чаты', { exact: true })).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText('Номер телефона'), '+79991234567')
+    await user.click(screen.getByRole('button', { name: 'Получить код' }))
+    await user.type(await screen.findByLabelText('Код из Telegram'), '12345')
+    vi.mocked(api.verifyCode).mockResolvedValueOnce({ success: true, telegram_user_id: 42, access_token: 'full', refresh_token: 'refresh' })
+    await user.click(screen.getByRole('button', { name: 'Войти' }))
+    await screen.findByRole('heading', { name: 'Теперь — в твоём AI' })
+    expect(api.refreshChats).not.toHaveBeenCalled()
+    expect(api.selectIndexedChats).not.toHaveBeenCalled()
+    expect(screen.queryByText('Изменить выбор чатов')).not.toBeInTheDocument()
+  })
+
+  it('returns an already connected automatic account straight to the plugin', async () => {
+    auth.user = { id: 'guest', auto_index_since: '2026-01-01T00:00:00Z' }
+    vi.mocked(api.getTelegramSession).mockResolvedValue({ id: 'session', phone_number: '+79991234567', is_active: true })
+    render(<ConnectPage />)
+    await screen.findByRole('heading', { name: 'Теперь — в твоём AI' })
+    expect(api.getChats).not.toHaveBeenCalled()
+  })
+
   it('uses the invite once, handles Telegram 2FA and only indexes chosen chats', async () => {
     window.history.replaceState({}, '', '/connect#invite=one-use-test-invitation')
     const user = userEvent.setup()
