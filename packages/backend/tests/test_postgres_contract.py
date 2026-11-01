@@ -256,6 +256,7 @@ async def test_hybrid_search_uses_fts_trigram_and_pgvector_after_migrations():
                 telegram_chat_id=9_001,
                 chat_type=ChatType.PRIVATE,
                 title="Postgres contract",
+                indexing_enabled=True,
             )
             db.add_all([user, chat])
             await db.flush()
@@ -462,7 +463,7 @@ async def test_hybrid_search_uses_fts_trigram_and_pgvector_after_migrations():
     not os.environ.get("POSTGRES_CONTRACT_DATABASE_URL"),
     reason="POSTGRES_CONTRACT_DATABASE_URL is not configured",
 )
-async def test_postgres_enforces_single_owner_and_media_integrity_constraints():
+async def test_postgres_allows_invited_accounts_and_enforces_media_integrity():
     engine = create_async_engine(os.environ["POSTGRES_CONTRACT_DATABASE_URL"])
     session_factory = async_sessionmaker(
         engine,
@@ -486,16 +487,18 @@ async def test_postgres_enforces_single_owner_and_media_integrity_constraints():
             db.add_all([owner, archived])
             await db.flush()
 
-            with pytest.raises(IntegrityError):
-                async with db.begin_nested():
-                    db.add(
-                        User(
-                            email=f"second-active-{uuid4()}@example.com",
-                            password_hash="not-used",
-                            is_active=True,
-                        )
-                    )
-                    await db.flush()
+            from app.services.single_user import validate_active_owner
+
+            guest = User(
+                email=f"invited-contract-{uuid4()}@example.com",
+                password_hash="not-used",
+                is_active=True,
+                invited_by_id=owner.id,
+                expected_telegram_user_id=987654,
+            )
+            db.add(guest)
+            await db.flush()
+            await validate_active_owner(db, owner.id)
 
             chat = TelegramChat(
                 user_id=owner.id,
@@ -541,3 +544,125 @@ async def test_postgres_enforces_single_owner_and_media_integrity_constraints():
         finally:
             await transaction.rollback()
             await engine.dispose()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("POSTGRES_CONTRACT_DATABASE_URL"),
+    reason="POSTGRES_CONTRACT_DATABASE_URL is not configured",
+)
+async def test_selected_embedding_repair_and_search_never_cross_accounts():
+    from app.models.settings import UserSettings
+    from app.tasks.embedding_tasks import repair_selected_embeddings
+    from app.services.indexing_service import get_indexing_status
+
+    engine = create_async_engine(os.environ["POSTGRES_CONTRACT_DATABASE_URL"])
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    vector = [1.0] + [0.0] * 1535
+    try:
+        async with sessions() as db:
+            transaction = await db.begin()
+            try:
+                users = [
+                    User(
+                        email=f"repair-{uuid4()}@example.test",
+                        password_hash="unused",
+                        is_active=True,
+                    )
+                    for _ in range(2)
+                ]
+                db.add_all(users)
+                await db.flush()
+                db.add_all(
+                    [
+                        UserSettings(
+                            user_id=users[0].id, embedding_backfill_enabled=True
+                        ),
+                        UserSettings(
+                            user_id=users[1].id, embedding_backfill_enabled=False
+                        ),
+                    ]
+                )
+                chats = [
+                    TelegramChat(
+                        user_id=user.id,
+                        telegram_chat_id=i + 101,
+                        title="Test school",
+                        chat_type=ChatType.PRIVATE,
+                        indexing_enabled=selected,
+                    )
+                    for i, (user, selected) in enumerate(
+                        [
+                            (users[0], True),
+                            (users[0], False),
+                            (users[1], True),
+                        ]
+                    )
+                ]
+                db.add_all(chats)
+                await db.flush()
+                messages = [
+                    TelegramMessage(
+                        chat_id=chat.id,
+                        telegram_message_id=i + 1,
+                        text="school launch violet",
+                        sent_at=datetime.now(UTC),
+                    )
+                    for i, chat in enumerate(chats)
+                ]
+                db.add_all(messages)
+                await db.flush()
+
+                @asynccontextmanager
+                async def database():
+                    yield db
+                    await db.flush()
+
+                with (
+                    patch("app.tasks.embedding_tasks.get_db_context", database),
+                    patch(
+                        "app.tasks.embedding_tasks.indexing_has_capacity",
+                        return_value=True,
+                    ),
+                    patch(
+                        "app.services.embedding_service.generate_embeddings",
+                        new_callable=AsyncMock,
+                    ) as provider,
+                ):
+                    provider.side_effect = RuntimeError("temporary outage")
+                    assert await repair_selected_embeddings() == 0
+                    assert all(message.embedding is None for message in messages)
+                    provider.side_effect = None
+                    provider.return_value = [vector]
+                    assert await repair_selected_embeddings() == 1
+                    assert messages[0].embedding is not None
+                    assert messages[1].embedding is None
+                    assert messages[2].embedding is None
+                    provider.reset_mock()
+                    assert await repair_selected_embeddings() == 0
+                    provider.assert_not_awaited()
+
+                # Exact and vector search both enforce account and selection filters.
+                for message in messages[1:]:
+                    message.embedding = vector
+                await db.flush()
+                with patch(
+                    "app.services.search_service.generate_query_embedding",
+                    new_callable=AsyncMock,
+                    return_value=vector,
+                ):
+                    for mode in ["exact", "hybrid"]:
+                        result = await semantic_search(
+                            db,
+                            users[0].id,
+                            SearchRequest(query="school launch violet", mode=mode),
+                        )
+                        assert [
+                            item.telegram_message_id for item in result.results
+                        ] == [1]
+                status = await get_indexing_status(db, users[0].id)
+                assert len(status["chats"]) == 1
+                assert status["chats"][0]["indexed_texts"] == 1
+            finally:
+                await transaction.rollback()
+    finally:
+        await engine.dispose()

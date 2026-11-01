@@ -195,6 +195,7 @@ def test_process_handoff_publish_failure_uses_durable_retry_path():
 
 async def test_dispatch_claims_pending_rows_once(db_session, test_user):
     chat = TelegramChat(
+        indexing_enabled=True,
         user_id=test_user.id,
         telegram_chat_id=321,
         chat_type=ChatType.PRIVATE,
@@ -241,6 +242,7 @@ async def test_dispatch_does_not_backfill_uninitialized_historical_media(
     test_user,
 ):
     chat = TelegramChat(
+        indexing_enabled=True,
         user_id=test_user.id,
         telegram_chat_id=322,
         chat_type=ChatType.PRIVATE,
@@ -287,6 +289,7 @@ async def test_dispatch_ignores_pending_media_for_inactive_user(
 ):
     test_user.is_active = False
     chat = TelegramChat(
+        indexing_enabled=True,
         user_id=test_user.id,
         telegram_chat_id=324,
         chat_type=ChatType.PRIVATE,
@@ -334,12 +337,14 @@ async def test_inactive_queued_media_does_not_consume_owner_queue_capacity(
     db_session.add(archived_user)
     await db_session.flush()
     owner_chat = TelegramChat(
+        indexing_enabled=True,
         user_id=test_user.id,
         telegram_chat_id=325,
         chat_type=ChatType.PRIVATE,
         title="Owner queue",
     )
     archive_chat = TelegramChat(
+        indexing_enabled=True,
         user_id=archived_user.id,
         telegram_chat_id=326,
         chat_type=ChatType.PRIVATE,
@@ -391,6 +396,7 @@ async def test_dispatch_prioritizes_live_pending_media_over_historical_backfill(
     test_user,
 ):
     chat = TelegramChat(
+        indexing_enabled=True,
         user_id=test_user.id,
         telegram_chat_id=323,
         chat_type=ChatType.PRIVATE,
@@ -446,6 +452,7 @@ async def test_stale_processing_job_is_requeued_instead_of_failed(
     db_session, test_user
 ):
     chat = TelegramChat(
+        indexing_enabled=True,
         user_id=test_user.id,
         telegram_chat_id=325,
         chat_type=ChatType.PRIVATE,
@@ -499,6 +506,7 @@ async def test_redelivered_index_stage_resets_only_interrupted_index_claim(
     db_session, test_user
 ):
     chat = TelegramChat(
+        indexing_enabled=True,
         user_id=test_user.id,
         telegram_chat_id=326,
         chat_type=ChatType.PRIVATE,

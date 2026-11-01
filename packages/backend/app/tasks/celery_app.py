@@ -25,6 +25,7 @@ celery_app = Celery(
         "app.tasks.digest_tasks",
         "app.tasks.agent_tasks",
         "app.tasks.media_tasks",
+        "app.tasks.embedding_tasks",
     ],
 )
 
@@ -103,6 +104,10 @@ def configure_celery_beat_observability(**_kwargs):
 
 # Beat schedule
 beat_schedule = {
+    "repair-selected-embeddings": {
+        "task": "app.tasks.embedding_tasks.repair_embeddings",
+        "schedule": 60,
+    },
     "generate-daily-digests": {
         "task": "app.tasks.digest_tasks.generate_all_digests",
         "schedule": 3600,  # Every hour — per-user hour matching inside task

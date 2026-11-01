@@ -246,7 +246,10 @@ class TestEmbedMessages:
 
         mock_result = MagicMock()
         mock_result.scalars.return_value.all.return_value = [msg1, msg2]
-        db.execute = AsyncMock(return_value=mock_result)
+        second_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [msg1]
+        second_result.scalars.return_value.all.return_value = [msg2]
+        db.execute = AsyncMock(side_effect=[mock_result, second_result])
 
         call_count = 0
 
@@ -288,7 +291,12 @@ class TestEmbedMessages:
 
         mock_result = MagicMock()
         mock_result.scalars.return_value.all.return_value = messages
-        db.execute = AsyncMock(return_value=mock_result)
+        batches = []
+        for group in (messages[:2], messages[2:4], messages[4:]):
+            result = MagicMock()
+            result.scalars.return_value.all.return_value = group
+            batches.append(result)
+        db.execute = AsyncMock(side_effect=batches)
 
         call_texts = []
 

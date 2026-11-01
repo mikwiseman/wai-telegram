@@ -13,6 +13,8 @@ interface AuthState {
   refreshToken: string | null
   isLoading: boolean
   login: (email: string, password: string) => Promise<void>
+  acceptInvitation: (token: string) => Promise<void>
+  completeTelegramLogin: (accessToken: string, refreshToken: string) => void
   logout: () => void
   checkAuth: () => Promise<void>
 }
@@ -41,6 +43,20 @@ export const useAuth = create<AuthState>()(
         accessToken: null,
         refreshToken: null,
         isLoading: true,
+
+        completeTelegramLogin: (accessToken: string, refreshToken: string) => {
+          api.setAccessToken(accessToken)
+          api.setRefreshToken(refreshToken)
+          set({ accessToken, refreshToken })
+        },
+
+        acceptInvitation: async (token: string) => {
+          const tokens = await api.acceptInvitation(token)
+          api.setAccessToken(tokens.access_token)
+          api.setRefreshToken(tokens.refresh_token)
+          const user = await api.getMe()
+          set({ user, accessToken: tokens.access_token, refreshToken: tokens.refresh_token, isLoading: false })
+        },
 
         login: async (email: string, password: string) => {
           const tokens = await api.login(email, password)

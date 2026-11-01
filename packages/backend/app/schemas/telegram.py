@@ -26,6 +26,8 @@ class VerifyCodeRequest(BaseModel):
 class VerifyCodeResponse(BaseModel):
     success: bool
     telegram_user_id: int
+    access_token: str | None = None
+    refresh_token: str | None = None
     message: str = "Successfully authenticated with Telegram"
 
 

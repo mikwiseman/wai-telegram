@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import (
     HTTPAuthorizationCredentials,
     HTTPBearer,
@@ -41,6 +41,7 @@ class AuthContext:
     user: User
     scopes: set[str] = field(default_factory=lambda: {"read", "write"})
     auth_type: str = "jwt"
+    session_id: str | None = None
 
     def has_scope(self, scope: str) -> bool:
         if scope in self.scopes:
@@ -52,6 +53,7 @@ async def get_auth_context(
     token: Annotated[str | None, Depends(oauth2_scheme)],
     api_key: Annotated[HTTPAuthorizationCredentials | None, Depends(api_key_scheme)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    request: Request = None,
 ) -> AuthContext:
     """Authenticate and return AuthContext with user + scopes."""
     credentials_exception = HTTPException(
@@ -63,7 +65,20 @@ async def get_auth_context(
     # Try JWT token first — full access
     if token:
         payload = decode_token(token)
-        if payload and payload.get("type") == "access":
+        if payload and payload.get("type") in {"access", "onboarding"}:
+            onboarding = payload.get("type") == "onboarding"
+            if onboarding and (
+                not payload.get("jti")
+                or request is None
+                or (request.method, request.url.path)
+                not in {
+                    ("GET", "/api/v1/auth/me"),
+                    ("GET", "/api/v1/telegram/session"),
+                    ("POST", "/api/v1/telegram/request-code"),
+                    ("POST", "/api/v1/telegram/verify-code"),
+                }
+            ):
+                raise HTTPException(403, "Сначала войдите в Telegram по приглашению.")
             user_id = payload.get("sub")
             if user_id:
                 result = await db.execute(
@@ -83,7 +98,10 @@ async def get_auth_context(
                         user_id=user.id,
                     )
                     return AuthContext(
-                        user=user, scopes={"read", "write"}, auth_type="jwt"
+                        user=user,
+                        scopes={"read", "write"},
+                        auth_type="onboarding" if onboarding else "jwt",
+                        session_id=payload.get("jti") if onboarding else None,
                     )
 
     # Try API key via api_keys table

@@ -161,6 +161,15 @@ async def apply_single_user_cutover(
     now: datetime | None = None,
 ) -> CutoverResult:
     """Apply all database-side revocations in the caller's transaction."""
+    invited = (
+        await db.execute(
+            select(User.id).where(User.invited_by_id.is_not(None)).limit(1)
+        )
+    ).scalar_one_or_none()
+    if invited is not None:
+        raise RuntimeError(
+            "Single-owner cutover is disabled after accounts have been invited"
+        )
     current_time = now or datetime.now(UTC)
     owner_id = evidence.owner_user_id
 
@@ -269,6 +278,15 @@ async def collect_archived_session_credentials(
     db: AsyncSession,
     owner_user_id: UUID,
 ) -> tuple[ArchivedSessionCredential, ...]:
+    invited = (
+        await db.execute(
+            select(User.id).where(User.invited_by_id.is_not(None)).limit(1)
+        )
+    ).scalar_one_or_none()
+    if invited is not None:
+        raise RuntimeError(
+            "Single-owner cutover is disabled after accounts have been invited"
+        )
     rows = (
         await db.execute(
             select(TelegramSession.id, TelegramSession.session_string).where(

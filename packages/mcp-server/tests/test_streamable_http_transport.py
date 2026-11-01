@@ -3,6 +3,42 @@ from telegram_wai_mcp import server as srv
 from telegram_wai_mcp.sse_server import create_app
 
 
+def test_public_mcp_never_inherits_process_owner_key(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_AI_KEY", "wai_owner_private")
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/mcp",
+            headers=_headers(),
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                },
+            },
+        )
+    assert response.status_code == 401
+
+
+def test_existing_session_rejects_a_different_users_key(monkeypatch):
+    monkeypatch.setattr(srv, "TelegramAIClient", FakeTelegramAIClient)
+    with TestClient(create_app()) as client:
+        session_id, protocol = _initialize(client, "/mcp", authorization="Bearer wai_alpha")
+        response = client.post(
+            "/mcp",
+            headers=_headers(
+                session_id=session_id,
+                protocol_version=protocol,
+                authorization="Bearer wai_beta",
+            ),
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        )
+    assert response.status_code == 403
+
+
 class FakeTelegramAIClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None):
         self.base_url = base_url

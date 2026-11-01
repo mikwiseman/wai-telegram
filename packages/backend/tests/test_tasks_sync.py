@@ -420,14 +420,14 @@ class TestReapStaleSyncJobs:
     @patch("app.tasks.sync_tasks.run_async")
     def test_celery_wrapper_calls_async(self, mock_run_async):
         """reap_stale_sync_jobs delegates to the shared async runner."""
-        mock_run_async.return_value = {"scanned": 0, "expired": 0}
+        mock_run_async.side_effect = [{"scanned": 0, "expired": 0}, 2]
 
         from app.tasks.sync_tasks import reap_stale_sync_jobs
 
         result = reap_stale_sync_jobs()
-        assert result == {"scanned": 0, "expired": 0}
-        mock_run_async.assert_called_once()
-        mock_run_async.call_args.args[0].close()
+        assert result == {"scanned": 0, "expired": 0, "resumed": 2}
+        for call in mock_run_async.call_args_list:
+            call.args[0].close()
 
     async def test_expires_stale_job_without_heartbeat(self, monkeypatch):
         """A stale IN_PROGRESS job with no heartbeat is marked FAILED."""

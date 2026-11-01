@@ -218,6 +218,7 @@ class TestSyncMessagesResolvesEntity:
         self, db_session, test_user
     ):
         chat = TelegramChat(
+            indexing_enabled=True,
             user_id=test_user.id,
             telegram_chat_id=1234567890,
             access_hash=None,  # stale — the exact case that used to fail
@@ -262,6 +263,7 @@ class TestSyncMessagesResolvesEntity:
 
     async def test_rejects_sync_job_owned_by_another_user(self, db_session, test_user):
         chat = TelegramChat(
+            indexing_enabled=True,
             user_id=test_user.id,
             telegram_chat_id=987654321,
             chat_type=ChatType.PRIVATE,

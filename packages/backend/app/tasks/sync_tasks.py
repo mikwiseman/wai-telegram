@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.database import get_db_context
 from app.models.sync_job import SyncJob, SyncStatus
 from app.services.rate_limiter import check_budget
+from app.services.indexing_service import indexing_has_capacity
 from app.services.single_user import is_user_active, is_user_active_in_database
 from app.services.sync_service import create_sync_job, sync_messages
 
@@ -349,7 +350,13 @@ async def _run_sync(
 
 
 @shared_task(bind=True, max_retries=0)
-def sync_all_chats_task(self, user_id: str, job_id: str, limit_per_chat: int = 500):
+def sync_all_chats_task(
+    self,
+    user_id: str,
+    job_id: str,
+    limit_per_chat: int = 500,
+    only_incomplete: bool = False,
+):
     """Bulk sync: sequentially sync messages for all user chats."""
     from app.services.telegram_client import TelegramSessionUnauthorizedError
 
@@ -377,7 +384,9 @@ def sync_all_chats_task(self, user_id: str, job_id: str, limit_per_chat: int = 5
         return {"status": "skipped", "reason": "sync_in_progress"}
 
     try:
-        result = run_async(_run_bulk_sync(user_uuid, job_uuid, limit_per_chat))
+        result = run_async(
+            _run_bulk_sync(user_uuid, job_uuid, limit_per_chat, only_incomplete)
+        )
         return result or {"status": "completed", "job_id": job_id}
     except TelegramSessionUnauthorizedError as e:
         run_async(_mark_job_state(job_uuid, SyncStatus.FAILED, str(e)))
@@ -397,7 +406,7 @@ def sync_all_chats_task(self, user_id: str, job_id: str, limit_per_chat: int = 5
 
 
 async def _run_bulk_sync(
-    user_id: UUID, job_id: UUID, limit_per_chat: int
+    user_id: UUID, job_id: UUID, limit_per_chat: int, only_incomplete: bool = False
 ) -> dict | None:
     """Run bulk sync for all user chats sequentially."""
     from app.models.chat import TelegramChat
@@ -411,6 +420,8 @@ async def _run_bulk_sync(
             )
         )
         job = result.scalar_one()
+        if job.status in {SyncStatus.COMPLETED, SyncStatus.CANCELLED}:
+            return {"status": "skipped", "reason": "finished_job"}
         if not await is_user_active(db, user_id):
             job.status = SyncStatus.CANCELLED
             job.error_message = "User is inactive"
@@ -423,12 +434,23 @@ async def _run_bulk_sync(
         job.completed_at = None
         await db.commit()
 
-        result = await db.execute(
-            select(TelegramChat)
-            .where(TelegramChat.user_id == user_id)
-            .order_by(TelegramChat.last_sync_at.asc().nulls_first())
+        query = select(TelegramChat).where(
+            TelegramChat.user_id == user_id,
+            TelegramChat.indexing_enabled.is_(True),
         )
-        chats = result.scalars().all()
+        if only_incomplete:
+            query = query.where(TelegramChat.history_synced_at.is_(None))
+        chats = (
+            (
+                await db.execute(
+                    query.order_by(
+                        TelegramChat.last_sync_at.asc().nulls_first(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
         total = len(chats)
 
         redis_client.setex(f"bulk:{job_id}:total", BULK_SYNC_TTL, total)
@@ -437,6 +459,7 @@ async def _run_bulk_sync(
 
         effective_limit = limit_per_chat if limit_per_chat > 0 else None
         total_messages = 0
+        failed_chats = 0
 
         for i, chat in enumerate(chats):
             redis_client.setex(
@@ -491,6 +514,7 @@ async def _run_bulk_sync(
                     count,
                 )
             except Exception as e:
+                failed_chats += 1
                 logger.error(
                     "Bulk sync: failed chat %s (%s): %s", chat.id, chat.title[:40], e
                 )
@@ -514,7 +538,8 @@ async def _run_bulk_sync(
             await db.commit()
             _touch_bulk_heartbeat(job_id)
 
-        job.status = SyncStatus.COMPLETED
+        job.status = SyncStatus.FAILED if failed_chats else SyncStatus.COMPLETED
+        job.error_message = f"{failed_chats} chats need retry" if failed_chats else None
         job.completed_at = datetime.now(UTC)
         job.messages_processed = total_messages
         await db.commit()
@@ -563,7 +588,105 @@ async def _listener_health_check() -> dict:
 @shared_task
 def reap_stale_sync_jobs() -> dict:
     """Mark stale IN_PROGRESS jobs as FAILED when heartbeat is missing."""
-    return run_async(_reap_stale_sync_jobs())
+    result = run_async(_reap_stale_sync_jobs())
+    result["resumed"] = run_async(resume_selected_history())
+    return result
+
+
+async def resume_selected_history() -> int:
+    """Resume selected history after lost deliveries, worker restarts or chat changes."""
+    from app.models.chat import TelegramChat
+    from app.models.session import TelegramSession
+    from app.models.settings import UserSettings
+    from app.models.user import User
+
+    if not indexing_has_capacity():
+        return 0
+    dispatched = 0
+    cutoff = datetime.now(UTC) - STALE_JOB_THRESHOLD
+    async with get_db_context() as db:
+        users = (
+            (
+                await db.execute(
+                    select(User.id)
+                    .join(UserSettings)
+                    .where(
+                        User.is_active.is_(True),
+                        UserSettings.embedding_backfill_enabled.is_(True),
+                        select(TelegramChat.id)
+                        .where(
+                            TelegramChat.user_id == User.id,
+                            TelegramChat.indexing_enabled.is_(True),
+                            TelegramChat.history_synced_at.is_(None),
+                        )
+                        .exists(),
+                        select(TelegramSession.id)
+                        .where(
+                            TelegramSession.user_id == User.id,
+                            TelegramSession.is_active.is_(True),
+                        )
+                        .exists(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for user_id in users:
+            # The selection endpoint takes this same lock before creating a job.
+            await db.execute(
+                select(User.id).where(User.id == user_id).with_for_update()
+            )
+            active = (
+                await db.execute(
+                    select(SyncJob)
+                    .where(
+                        SyncJob.user_id == user_id,
+                        SyncJob.status.in_(
+                            [SyncStatus.PENDING, SyncStatus.IN_PROGRESS]
+                        ),
+                    )
+                    .order_by(SyncJob.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if active is not None:
+                stale = active.updated_at.replace(tzinfo=UTC) < cutoff
+                if (
+                    active.status == SyncStatus.IN_PROGRESS
+                    or active.chat_id is not None
+                    or not stale
+                ):
+                    await db.commit()
+                    continue
+                job = active
+                job.updated_at = datetime.now(UTC)
+            else:
+                recent_failure = (
+                    await db.execute(
+                        select(SyncJob.id)
+                        .where(
+                            SyncJob.user_id == user_id,
+                            SyncJob.chat_id.is_(None),
+                            SyncJob.status == SyncStatus.FAILED,
+                            SyncJob.updated_at >= cutoff,
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if recent_failure is not None:
+                    await db.commit()
+                    continue
+                job = await create_sync_job(db, user_id)
+            await db.commit()
+            try:
+                sync_all_chats_task.delay(str(user_id), str(job.id), 0, True)
+                dispatched += 1
+            except Exception:
+                logger.warning(
+                    "History dispatch unavailable; durable job will be retried"
+                )
+    return dispatched
 
 
 async def _reap_stale_sync_jobs() -> dict:

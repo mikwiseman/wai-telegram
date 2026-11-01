@@ -54,7 +54,7 @@ def _base_where_clauses(
     user_id: UUID,
     request: SearchRequest,
 ) -> tuple[list[str], dict[str, object]]:
-    where_clauses = ["c.user_id = :user_id"]
+    where_clauses = ["c.user_id = :user_id", "c.indexing_enabled IS TRUE"]
     offset = _search_offset(request.cursor)
     params: dict[str, object] = {
         "user_id": str(user_id),

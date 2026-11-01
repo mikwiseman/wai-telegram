@@ -18,6 +18,7 @@ class TestTelegramListener:
         self, db_session, test_user
     ):
         chat = TelegramChat(
+            indexing_enabled=True,
             user_id=test_user.id,
             telegram_chat_id=321,
             chat_type=ChatType.PRIVATE,
@@ -121,6 +122,7 @@ class TestTelegramListener:
         self, db_session, test_user
     ):
         chat = TelegramChat(
+            indexing_enabled=True,
             user_id=test_user.id,
             telegram_chat_id=123,
             chat_type=ChatType.PRIVATE,
@@ -164,6 +166,7 @@ class TestTelegramListener:
     ):
         chats = [
             TelegramChat(
+                indexing_enabled=True,
                 user_id=test_user.id,
                 telegram_chat_id=telegram_chat_id,
                 chat_type=ChatType.PRIVATE,
@@ -214,6 +217,7 @@ class TestTelegramListener:
         self, db_session, test_user
     ):
         chat = TelegramChat(
+            indexing_enabled=True,
             user_id=test_user.id,
             telegram_chat_id=789,
             chat_type=ChatType.PRIVATE,

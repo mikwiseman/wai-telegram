@@ -73,7 +73,7 @@ def _active_media_message_ids():
         select(TelegramMessage.id)
         .join(TelegramChat, TelegramChat.id == TelegramMessage.chat_id)
         .join(User, User.id == TelegramChat.user_id)
-        .where(User.is_active.is_(True))
+        .where(User.is_active.is_(True), TelegramChat.indexing_enabled.is_(True))
     )
 
 
@@ -836,6 +836,7 @@ async def _finalize_media(
                     TelegramMessage.media_processing_status
                     == MediaProcessingStatus.PROCESSING,
                     User.is_active.is_(True),
+                    TelegramChat.indexing_enabled.is_(True),
                 )
                 .with_for_update()
             )
@@ -922,6 +923,7 @@ async def _load_active_job(
                 TelegramMessage.id == message_id,
                 TelegramMessage.has_media.is_(True),
                 User.is_active.is_(True),
+                TelegramChat.indexing_enabled.is_(True),
             )
         )
     ).one_or_none()
@@ -984,6 +986,7 @@ async def extract_media_stage(message_id: UUID) -> str:
                     MediaObject.stage == MediaStage.INDEX,
                     TelegramMessage.content_summary.isnot(None),
                     User.is_active.is_(True),
+                    TelegramChat.indexing_enabled.is_(True),
                 )
             )
         ).scalar_one_or_none()

@@ -91,6 +91,20 @@ def create_refresh_token(data: dict) -> str:
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
 
 
+def create_onboarding_token(user_id: str) -> str:
+    """An invitation only permits Telegram login, never archive or API-key access."""
+    return jwt.encode(
+        {
+            "sub": user_id,
+            "type": "onboarding",
+            "jti": secrets.token_urlsafe(24),
+            "exp": datetime.now(UTC) + timedelta(minutes=30),
+        },
+        settings.secret_key,
+        algorithm=settings.algorithm,
+    )
+
+
 def decode_token(token: str) -> dict | None:
     try:
         payload = jwt.decode(

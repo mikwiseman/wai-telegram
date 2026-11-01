@@ -6,8 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from telethon import TelegramClient
+from telethon.errors import (
+    PasswordHashInvalidError,
+    PhoneCodeExpiredError,
+    PhoneCodeInvalidError,
+)
 
-from app.core.auth import CurrentUser, RequireWrite
+from app.core.auth import AuthContext, RequireWrite, get_auth_context
+from app.core.security import create_access_token, create_refresh_token
 from app.core.database import get_db
 from app.core.limiter import limiter
 from app.models.session import TelegramSession
@@ -27,6 +33,12 @@ router = APIRouter()
 MAX_AUTH_CLIENTS = 50
 _auth_clients: dict[str, tuple[TelegramClient, float]] = {}
 _AUTH_CLIENT_TTL = 300  # 5 minutes
+
+
+def _auth_client_key(ctx: AuthContext, phone: str) -> str:
+    # Separate pending Telegram authorizations for independently issued invitations.
+    identity = f"{ctx.user.id}:{ctx.session_id}" if ctx.session_id else str(ctx.user.id)
+    return f"{identity}:{phone}"
 
 
 async def _disconnect_auth_client(client: TelegramClient) -> None:
@@ -56,7 +68,7 @@ async def _cleanup_expired_auth_clients() -> None:
     expired = [k for k, (_, ts) in _auth_clients.items() if now - ts > _AUTH_CLIENT_TTL]
     for key in expired:
         client, _ = _auth_clients.pop(key)
-        logger.info(f"Cleaned up expired auth client: {key}")
+        logger.info("Cleaned up expired Telegram authentication client")
         await _disconnect_auth_client(client)
 
     # Enforce max limit — evict oldest if over cap
@@ -64,7 +76,7 @@ async def _cleanup_expired_auth_clients() -> None:
         sorted_keys = sorted(_auth_clients, key=lambda k: _auth_clients[k][1])
         for key in sorted_keys[: len(_auth_clients) - MAX_AUTH_CLIENTS]:
             client, _ = _auth_clients.pop(key)
-            logger.info(f"Evicted auth client (over limit): {key}")
+            logger.info("Evicted Telegram authentication client over limit")
             await _disconnect_auth_client(client)
 
 
@@ -81,7 +93,7 @@ async def request_code(
         client, phone_code_hash, code_type = await telegram_client.request_code(
             body.phone_number
         )
-        await _replace_auth_client(f"{ctx.user.id}:{body.phone_number}", client)
+        await _replace_auth_client(_auth_client_key(ctx, body.phone_number), client)
         return RequestCodeResponse(
             phone_code_hash=phone_code_hash,
             code_type=code_type,
@@ -95,7 +107,9 @@ async def request_code(
 
 
 @router.post("/verify-code", response_model=VerifyCodeResponse)
+@limiter.limit("10/minute")
 async def verify_code(
+    request: Request,
     body: VerifyCodeRequest,
     ctx: RequireWrite,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -103,7 +117,7 @@ async def verify_code(
     """Verify code and complete Telegram authentication."""
     user = ctx.user
     await _cleanup_expired_auth_clients()
-    client_key = f"{user.id}:{body.phone_number}"
+    client_key = _auth_client_key(ctx, body.phone_number)
     entry = _auth_clients.get(client_key)
 
     if not entry:
@@ -122,6 +136,15 @@ async def verify_code(
             body.password,
         )
 
+        if (
+            user.expected_telegram_user_id is not None
+            and telegram_user_id != user.expected_telegram_user_id
+        ):
+            await _pop_and_disconnect_auth_client(client_key)
+            raise HTTPException(
+                403, "Это приглашение предназначено для другого Telegram-аккаунта."
+            )
+
         # Save session
         await telegram_client.save_session(
             db,
@@ -135,7 +158,20 @@ async def verify_code(
         return VerifyCodeResponse(
             success=True,
             telegram_user_id=telegram_user_id,
+            access_token=create_access_token({"sub": str(user.id)})
+            if ctx.auth_type == "onboarding"
+            else None,
+            refresh_token=create_refresh_token({"sub": str(user.id)})
+            if ctx.auth_type == "onboarding"
+            else None,
         )
+    except HTTPException:
+        raise
+    except (PhoneCodeInvalidError, PasswordHashInvalidError):
+        raise HTTPException(400, "Неверный код или пароль. Попробуйте ещё раз.")
+    except PhoneCodeExpiredError:
+        await _pop_and_disconnect_auth_client(client_key)
+        raise HTTPException(400, "Код истёк. Запросите новый.")
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
@@ -145,10 +181,13 @@ async def verify_code(
 
 @router.get("/session", response_model=SessionResponse | None)
 async def get_session(
-    user: CurrentUser,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> SessionResponse | None:
     """Get current Telegram session info."""
+    if ctx.auth_type == "onboarding":
+        return None
+    user = ctx.user
     result = await db.execute(
         select(TelegramSession).where(
             TelegramSession.user_id == user.id,

@@ -3,8 +3,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from 'next-themes'
 import { useState } from 'react'
+import { useAuth } from '@/lib/auth'
 
-export function Providers({ children }: { children: React.ReactNode }) {
+function AccountQueries({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -17,9 +18,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
       })
   )
 
-  return (
-    <ThemeProvider attribute="class" defaultTheme="light" disableTransitionOnChange>
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-    </ThemeProvider>
-  )
+  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+}
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  const userId = useAuth(state => state.user?.id)
+  return <ThemeProvider attribute="class" defaultTheme="light" disableTransitionOnChange>
+    <AccountQueries key={userId ?? 'signed-out'}>{children}</AccountQueries>
+  </ThemeProvider>
 }
