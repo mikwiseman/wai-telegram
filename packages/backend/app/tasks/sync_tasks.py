@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 import redis
 from celery import shared_task
 from celery.exceptions import MaxRetriesExceededError
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.async_runner import run_async
 from app.core.config import get_settings
@@ -16,7 +16,7 @@ from app.models.sync_job import SyncJob, SyncStatus
 from app.services.rate_limiter import check_budget
 from app.services.indexing_service import indexing_has_capacity
 from app.services.single_user import is_user_active, is_user_active_in_database
-from app.services.sync_service import create_sync_job, sync_messages
+from app.services.sync_service import create_sync_job, sync_chats, sync_messages
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -410,6 +410,7 @@ async def _run_bulk_sync(
 ) -> dict | None:
     """Run bulk sync for all user chats sequentially."""
     from app.models.chat import TelegramChat
+    from app.models.user import User
 
     async with get_db_context() as db:
         result = await db.execute(
@@ -433,6 +434,11 @@ async def _run_bulk_sync(
         job.error_message = None
         job.completed_at = None
         await db.commit()
+
+        account = await db.get(User, user_id)
+        if account and account.auto_index_since is not None:
+            await sync_chats(db, user_id)
+            await db.commit()
 
         query = select(TelegramChat).where(
             TelegramChat.user_id == user_id,
@@ -613,13 +619,16 @@ async def resume_selected_history() -> int:
                     .where(
                         User.is_active.is_(True),
                         UserSettings.embedding_backfill_enabled.is_(True),
-                        select(TelegramChat.id)
-                        .where(
-                            TelegramChat.user_id == User.id,
-                            TelegramChat.indexing_enabled.is_(True),
-                            TelegramChat.history_synced_at.is_(None),
-                        )
-                        .exists(),
+                        or_(
+                            User.auto_index_since.is_not(None),
+                            select(TelegramChat.id)
+                            .where(
+                                TelegramChat.user_id == User.id,
+                                TelegramChat.indexing_enabled.is_(True),
+                                TelegramChat.history_synced_at.is_(None),
+                            )
+                            .exists(),
+                        ),
                         select(TelegramSession.id)
                         .where(
                             TelegramSession.user_id == User.id,
@@ -662,13 +671,18 @@ async def resume_selected_history() -> int:
                 job = active
                 job.updated_at = datetime.now(UTC)
             else:
+                account = await db.get(User, user_id)
+                recent_statuses = [SyncStatus.FAILED]
+                if account and account.auto_index_since is not None:
+                    # Rediscover dialogs periodically, without polling Telegram each minute.
+                    recent_statuses.append(SyncStatus.COMPLETED)
                 recent_failure = (
                     await db.execute(
                         select(SyncJob.id)
                         .where(
                             SyncJob.user_id == user_id,
                             SyncJob.chat_id.is_(None),
-                            SyncJob.status == SyncStatus.FAILED,
+                            SyncJob.status.in_(recent_statuses),
                             SyncJob.updated_at >= cutoff,
                         )
                         .limit(1)

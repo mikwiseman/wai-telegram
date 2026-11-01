@@ -12,6 +12,10 @@ uv run python -m app.cli.invite_user --telegram-user-id TELEGRAM_USER_ID
 
 The private link expires after seven days and can be redeemed once. Its fragment is removed immediately. Redemption grants only a 30-minute Telegram-login token; archive access and key creation require successful Telegram authentication. Reissuing a link retains the existing account and chat choices.
 
+For an account that should connect every chat without choosing them, add `--since 2026-01-01`. This sets a fixed UTC start date, enables automatic discovery and embedding repair for this account, and removes the chat-selection step. The owner is unchanged. New messages continue to arrive after the initial import; this is not a rolling retention/deletion policy.
+
+Automatic accounts start loading within the existing maintenance cycle after Telegram login. Dialogs refresh at most once per 15 minutes after a completed run, so newly joined chats are included. History stops at the date boundary before storing text or queuing media. New-message events older than the boundary are ignored too.
+
 ## Indexing
 
 - Invited accounts start with no chats selected. Selection loads all available history; the existing listener receives new messages.

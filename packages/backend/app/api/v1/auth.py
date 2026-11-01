@@ -141,6 +141,7 @@ async def get_current_user_info(user: CurrentUser) -> UserResponse:
         id=user.id,
         email=user.email,
         created_at=user.created_at,
+        auto_index_since=user.auto_index_since,
     )
 
 

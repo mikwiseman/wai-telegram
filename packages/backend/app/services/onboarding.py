@@ -16,7 +16,11 @@ def invitation_hash(token: str) -> str:
 
 
 async def create_invitation(
-    db: AsyncSession, owner_id: UUID, telegram_user_id: int
+    db: AsyncSession,
+    owner_id: UUID,
+    telegram_user_id: int,
+    *,
+    auto_index_since: datetime | None = None,
 ) -> tuple[User, str]:
     owner = await db.get(User, owner_id)
     if not owner or not owner.is_active or owner.invited_by_id is not None:
@@ -47,6 +51,16 @@ async def create_invitation(
         )
     elif user.invited_by_id != owner_id:
         raise ValueError("This account was not invited by this owner")
+    if auto_index_since is not None:
+        user.auto_index_since = auto_index_since
+        await db.flush()
+        preferences = (
+            await db.execute(
+                select(UserSettings).where(UserSettings.user_id == user.id)
+            )
+        ).scalar_one()
+        preferences.embedding_backfill_enabled = True
+        preferences.realtime_sync_enabled = True
     token = secrets.token_urlsafe(32)
     user.invite_token_hash = invitation_hash(token)
     user.invite_expires_at = datetime.now(UTC) + timedelta(days=7)

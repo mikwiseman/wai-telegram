@@ -132,7 +132,8 @@ async def sync_chats(db: AsyncSession, user_id: UUID) -> list[TelegramChat]:
     client = await get_client(user_id, db)
     chats = []
     account = await db.get(User, user_id)
-    index_new_chats = bool(account and account.invited_by_id is None)
+    automatic = bool(account and account.auto_index_since is not None)
+    index_new_chats = bool(account and (account.invited_by_id is None or automatic))
     try:
         record_request()  # Track iter_dialogs API call
 
@@ -171,6 +172,7 @@ async def sync_chats(db: AsyncSession, user_id: UUID) -> list[TelegramChat]:
             stmt = stmt.on_conflict_do_update(
                 constraint="uq_telegram_chats_user_chat",
                 set_={
+                    **({"indexing_enabled": True} if automatic else {}),
                     "access_hash": func.coalesce(
                         stmt.excluded.access_hash,
                         TelegramChat.access_hash,
@@ -236,6 +238,10 @@ async def sync_messages(
         raise ValueError("Chat not found")
     if not chat.indexing_enabled:
         raise ValueError("Indexing is disabled for this chat")
+    account = await db.get(User, user_id)
+    since = account.auto_index_since if account else None
+    if since is not None:
+        since = since.replace(tzinfo=UTC)
 
     # Get job
     result = await db.execute(
@@ -279,6 +285,9 @@ async def sync_messages(
         peer = await _resolve_chat_entity(client, db, chat)
         iterator = client.iter_messages(peer, **iter_kwargs)
         async for message in iterator:
+            # Telegram returns newest first. Stop before saving/processing older media.
+            if since is not None and message.date < since:
+                break
             messages_seen += 1
             oldest_seen_id = message.id
 

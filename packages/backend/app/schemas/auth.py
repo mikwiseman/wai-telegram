@@ -25,6 +25,7 @@ class UserResponse(BaseModel):
     id: UUID
     email: str
     created_at: datetime
+    auto_index_since: datetime | None = None
 
 
 # --- API Key schemas ---

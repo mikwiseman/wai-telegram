@@ -204,7 +204,9 @@ class TelegramListener:
         account = await db.get(User, user_id)
         stmt = pg_insert(TelegramChat).values(
             user_id=user_id,
-            indexing_enabled=bool(account and account.invited_by_id is None),
+            indexing_enabled=bool(
+                account and (account.invited_by_id is None or account.auto_index_since)
+            ),
             telegram_chat_id=chat_id_tg,
             access_hash=getattr(entity, "access_hash", None),
             chat_type=chat_type,
@@ -281,6 +283,14 @@ class TelegramListener:
                         return
 
                 if not chat or not chat.indexing_enabled:
+                    return
+
+                account = await db.get(User, user_id)
+                if (
+                    account
+                    and account.auto_index_since is not None
+                    and message.date < account.auto_index_since.replace(tzinfo=UTC)
+                ):
                     return
 
                 try:

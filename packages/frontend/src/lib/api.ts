@@ -167,7 +167,7 @@ class ApiClient {
   }
 
   async getMe() {
-    return this.request<{ id: string; email: string }>(
+    return this.request<{ id: string; email: string; auto_index_since?: string | null }>(
       'GET',
       '/api/v1/auth/me'
     )
@@ -371,6 +371,7 @@ export interface Chat {
 }
 
 export interface IndexingStatus {
+  auto_index_since?: string | null
   pause_reason?: 'disk_space' | null
   chats: { id: string; title: string; history_complete: boolean; messages: number; text_messages: number; indexed_texts: number; pending_media: number; failed_media?: number }[]
   sync_status: string | null

@@ -19,6 +19,8 @@ class User(Base):
     )
     invite_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
     invite_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When set, discover every chat automatically and load history from this date.
+    auto_index_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false"
     )

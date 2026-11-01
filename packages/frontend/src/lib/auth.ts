@@ -5,6 +5,7 @@ import { api } from './api'
 interface User {
   id: string
   email: string
+  auto_index_since?: string | null
 }
 
 interface AuthState {

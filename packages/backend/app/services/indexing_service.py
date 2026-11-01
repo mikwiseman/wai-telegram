@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.chat import TelegramChat
 from app.models.message import MediaProcessingStatus, TelegramMessage
 from app.models.sync_job import SyncJob
+from app.models.user import User
 
 import shutil
 
@@ -18,6 +19,7 @@ def indexing_has_capacity() -> bool:
 
 
 async def get_indexing_status(db: AsyncSession, user_id: UUID) -> dict:
+    account = await db.get(User, user_id)
     eligible = (
         func.length(
             func.trim(func.coalesce(TelegramMessage.text, ""), " \t\n\r\v\f\u00a0")
@@ -92,6 +94,7 @@ async def get_indexing_status(db: AsyncSession, user_id: UUID) -> dict:
         .all()
     )
     return {
+        "auto_index_since": account.auto_index_since if account else None,
         "pause_reason": None if indexing_has_capacity() else "disk_space",
         "chats": [
             {

@@ -29,6 +29,7 @@ export default function ConnectPage() {
   const [copied, setCopied] = useState('')
   const [coverage, setCoverage] = useState<IndexingStatus | null>(null)
   const [pluginUsed, setPluginUsed] = useState(false)
+  const [autoSince, setAutoSince] = useState(user?.auto_index_since ?? null)
 
   async function loadChats(refresh = false) {
     const page = refresh ? await api.refreshChats() : await api.getChats(undefined, 1000)
@@ -53,8 +54,11 @@ export default function ConnectPage() {
       try {
         if (invite) await acceptInvitation(invite)
         else if (!user) { setStep('invitation'); return }
+        const since = useAuth.getState().user?.auto_index_since ?? null
+        setAutoSince(since)
         const session = await api.getTelegramSession()
-        if (session) await loadChats()
+        if (session && since) setStep('plugin')
+        else if (session) await loadChats()
         else setStep('telegram')
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Не удалось открыть подключение')
@@ -116,7 +120,8 @@ export default function ConnectPage() {
         throw err
       }
       setCode(''); setPassword('')
-      await loadChats(true)
+      if (autoSince) setStep('plugin')
+      else await loadChats(true)
     })
   }
 
@@ -131,7 +136,9 @@ export default function ConnectPage() {
     await perform(async () => { await navigator.clipboard.writeText(value); setCopied(label) })
   }
 
-  const active = step === 'telegram' ? 0 : step === 'chats' ? 1 : step === 'plugin' ? 2 : -1
+  const steps = autoSince ? ['Telegram', 'Плагин'] : ['Telegram', 'Чаты', 'Плагин']
+  const active = step === 'telegram' ? 0 : step === 'chats' ? 1 : step === 'plugin' ? steps.length - 1 : -1
+  const period = autoSince ? new Date(`${autoSince.slice(0, 10)}T00:00:00Z`).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).replace(/\s*г\.$/, '') : null
   const visible = chats.filter(chat => `${chat.title} ${chat.username ?? ''}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
   const totals = coverage?.chats.reduce((sum, chat) => ({
     text: sum.text + chat.text_messages, indexed: sum.indexed + chat.indexed_texts,
@@ -147,7 +154,7 @@ export default function ConnectPage() {
         <span className="text-xs text-secondary">Твой Telegram для AI</span>
       </header>
       {active >= 0 && <nav aria-label="Шаги подключения" className="mb-10 flex gap-6 text-xs sm:gap-10">
-        {['Telegram', 'Чаты', 'Плагин'].map((label, index) => <span key={label} aria-current={index === active ? 'step' : undefined} className={index === active ? 'font-semibold text-primary' : 'text-secondary'}>
+        {steps.map((label, index) => <span key={label} aria-current={index === active ? 'step' : undefined} className={index === active ? 'font-semibold text-primary' : 'text-secondary'}>
           <span className={index <= active ? 'mr-2 text-blue-500' : 'mr-2'}>{index < active ? '✓' : `0${index + 1}`}</span>{label}
         </span>)}
       </nav>}
@@ -160,7 +167,7 @@ export default function ConnectPage() {
       </>}
       {step === 'telegram' && <>
         <h1 className="mb-4 text-4xl font-medium tracking-tight">Подключи свой Telegram</h1>
-        <p className="mb-8 leading-relaxed text-secondary">Войди в свой аккаунт. На следующем шаге выберешь переписки для поиска.</p>
+        <p className="mb-8 leading-relaxed text-secondary">{autoSince ? `Все чаты подключатся автоматически. История с ${period} и новые сообщения — для поиска по смыслу.` : 'Войди в свой аккаунт. На следующем шаге выберешь переписки для поиска.'}</p>
         <form onSubmit={loginTelegram} className="max-w-sm space-y-5">
           {!codeHash ? <label className="block text-sm">Номер телефона
             <input className={`${input} mt-2`} type="tel" autoComplete="tel" placeholder="+7 999 123-45-67" value={phone} onChange={event => setPhone(event.target.value)} required />
@@ -229,6 +236,7 @@ export default function ConnectPage() {
         </div>
         <div className="mt-10 border-t pt-6 text-sm" aria-live="polite">
           <p className="font-medium">{pluginUsed ? '✓ Плагин подключён' : 'Ждём первого обращения из плагина'}</p>
+          {autoSince && <p className="mt-2 leading-relaxed text-secondary">Все чаты · история с {period}. Загрузка идёт автоматически.</p>}
           {coverage?.pause_reason === 'disk_space' && <p className="mt-3 text-secondary">Для продолжения индексации нужно дополнительное место на сервере. Поиск по готовой части истории работает.</p>}
           {totals && <p className="mt-2 leading-relaxed text-secondary">
             {historyReady && totals.indexed === totals.text && !totals.media && !totals.failed ? 'История готова к поиску.' : 'Поиск работает по готовой части истории.'}
@@ -236,8 +244,8 @@ export default function ConnectPage() {
             {totals.media > 0 && ` Вложений в обработке: ${totals.media.toLocaleString('ru-RU')}.`}
             {totals.failed > 0 && ` Не удалось обработать вложений: ${totals.failed.toLocaleString('ru-RU')}.`}
           </p>}
-          {coverage?.sync_status === 'failed' && <button className="mt-3 text-blue-500" disabled={busy} onClick={() => void startIndexing()}>Продолжить загрузку истории</button>}
-          <button className="mt-5 text-xs text-secondary underline underline-offset-4" onClick={() => setStep('chats')}>Изменить выбор чатов</button>
+          {coverage?.sync_status === 'failed' && (autoSince ? <p className="mt-3 text-secondary">Загрузка временно прервалась. Повторим автоматически.</p> : <button className="mt-3 text-blue-500" disabled={busy} onClick={() => void startIndexing()}>Продолжить загрузку истории</button>)}
+          {!autoSince && <button className="mt-5 text-xs text-secondary underline underline-offset-4" onClick={() => setStep('chats')}>Изменить выбор чатов</button>}
         </div>
       </>}
     </main>
