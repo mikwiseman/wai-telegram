@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: wai-security/wai-telegram-db:20261023-os
     container_name: wai-telegram-db
     environment:
       POSTGRES_USER: telegram
@@ -45,7 +45,7 @@ services:
           memory: 512M
 
   redis:
-    image: redis:7-alpine
+    image: wai-security/wai-telegram-redis:20261023-os
     container_name: wai-telegram-redis
     # Redis is the durable Celery broker. Evicting arbitrary keys can lose queued
     # media jobs, so fail writes explicitly instead of silently dropping tasks.
