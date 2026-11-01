@@ -14,7 +14,7 @@ EnvironmentFile=/opt/wai-telegram/.env.production
 # Media is staged here only between download and text extraction, then deleted,
 # so it no longer warrants a dedicated volume. Verify the directory is usable
 # instead of demanding a separate mount.
-ExecStartPre=/usr/bin/test -w /srv/wai-telegram-media
+ExecStartPre=/bin/sh -c 'test -w /srv/wai-telegram-media'
 ExecStartPre=+/bin/sh -c 'n=0; until docker exec wai-telegram-redis redis-cli ping >/dev/null 2>&1; do n=$((n+1)); [ $n -ge 30 ] && exit 1; sleep 2; done'
 ExecStart=/opt/wai-telegram/.venv/bin/celery -A app.tasks.celery_app:celery_app worker --hostname=media-process@%H --loglevel=info --queues=media-process --concurrency=2 --prefetch-multiplier=1
 Restart=always
