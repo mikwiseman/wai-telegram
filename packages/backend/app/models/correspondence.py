@@ -16,6 +16,9 @@ class CorrespondenceEvent(Base):
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
+    chat_id: Mapped[UUID] = mapped_column(
+        ForeignKey("telegram_chats.id", ondelete="CASCADE")
+    )
     payload: Mapped[dict] = mapped_column(JSON)
     destination_fingerprint: Mapped[str] = mapped_column(String(64))
     attempts: Mapped[int] = mapped_column(Integer, default=0)

@@ -33,6 +33,7 @@ async def test_event_is_transactional_deduplicated_and_contains_only_references(
         user_id=test_user.id,
         telegram_chat_id=123,
         chat_type=ChatType.PRIVATE,
+        indexing_enabled=True,
         title="Person",
     )
     db_session.add(chat)
@@ -63,6 +64,7 @@ async def test_foreign_owner_and_broadcast_channels_never_enqueue(
         user_id=test_user.id,
         telegram_chat_id=123,
         chat_type=ChatType.PRIVATE,
+        indexing_enabled=True,
         title="Person",
     )
     db_session.add(chat)
@@ -86,6 +88,7 @@ async def test_delivery_retries_the_same_event_after_timeout_and_accepts_readbac
         user_id=test_user.id,
         telegram_chat_id=123,
         chat_type=ChatType.PRIVATE,
+        indexing_enabled=True,
         title="Person",
     )
     db_session.add(chat)
@@ -113,6 +116,7 @@ async def test_destination_change_does_not_replay_private_backlog_to_a_new_desti
         user_id=test_user.id,
         telegram_chat_id=123,
         chat_type=ChatType.PRIVATE,
+        indexing_enabled=True,
         title="Person",
     )
     db_session.add(chat)

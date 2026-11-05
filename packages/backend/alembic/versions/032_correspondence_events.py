@@ -20,6 +20,12 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("payload", sa.JSON(), nullable=False),
+        sa.Column(
+            "chat_id",
+            sa.Uuid(),
+            sa.ForeignKey("telegram_chats.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("destination_fingerprint", sa.String(64), nullable=False),
         sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=False),

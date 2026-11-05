@@ -50,7 +50,12 @@ async def enqueue_event(
     occurred_at: datetime,
 ) -> bool:
     target = destination()
-    if not target or chat.user_id != target[2] or chat.chat_type == ChatType.CHANNEL:
+    if (
+        not target
+        or chat.user_id != target[2]
+        or not chat.indexing_enabled
+        or chat.chat_type == ChatType.CHANNEL
+    ):
         return False
     event_id = hashlib.sha256(
         f"{chat.user_id}:{chat.telegram_chat_id}:{message_id}:{kind}:{revision}".encode()
@@ -60,6 +65,7 @@ async def enqueue_event(
         .values(
             id=event_id,
             user_id=chat.user_id,
+            chat_id=chat.id,
             destination_fingerprint=target[3],
             payload={
                 "id": event_id,
@@ -122,13 +128,15 @@ async def deliver_batch(db: AsyncSession, client: httpx.AsyncClient) -> int:
     rows = (
         await db.scalars(
             select(CorrespondenceEvent)
-            .join(User)
+            .join(User, User.id == CorrespondenceEvent.user_id)
+            .join(TelegramChat, TelegramChat.id == CorrespondenceEvent.chat_id)
             .where(
                 CorrespondenceEvent.delivered_at.is_(None),
                 CorrespondenceEvent.revoked.is_(False),
                 CorrespondenceEvent.next_attempt_at <= now,
                 CorrespondenceEvent.user_id == owner,
                 User.is_active.is_(True),
+                TelegramChat.indexing_enabled.is_(True),
             )
             .order_by(CorrespondenceEvent.next_attempt_at, CorrespondenceEvent.id)
             .limit(10)
