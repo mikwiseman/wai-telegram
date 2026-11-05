@@ -124,9 +124,12 @@ class TelegramAIClient:
         limit: int = 100,
         cursor: str | None = None,
         unread_only: bool = False,
+        telegram_chat_id: int | None = None,
     ) -> dict[str, Any]:
         """List synced Telegram chats with cursor pagination."""
         params: dict[str, Any] = {"limit": limit}
+        if telegram_chat_id is not None:
+            params["telegram_chat_id"] = telegram_chat_id
         if chat_type:
             params["chat_type"] = chat_type
         if cursor:

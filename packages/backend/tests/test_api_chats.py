@@ -10,6 +10,41 @@ from app.services.telegram_client import TelegramSessionUnauthorizedError
 
 
 class TestListChats:
+    async def test_exact_telegram_id_lookup_preserves_owner_scope(
+        self, auth_client, db_session, test_user
+    ):
+        wanted = TelegramChat(
+            user_id=test_user.id,
+            telegram_chat_id=-1001564999252,
+            chat_type=ChatType.SUPERGROUP,
+            title="Wanted",
+        )
+        unrelated = TelegramChat(
+            user_id=test_user.id,
+            telegram_chat_id=123,
+            chat_type=ChatType.PRIVATE,
+            title="Unrelated",
+        )
+        foreign = TelegramChat(
+            user_id=uuid4(),
+            telegram_chat_id=-1001564999252,
+            chat_type=ChatType.SUPERGROUP,
+            title="Foreign",
+        )
+        db_session.add_all([wanted, unrelated, foreign])
+        await db_session.flush()
+        response = await auth_client.get(
+            "/api/v1/chats", params={"telegram_chat_id": -1001564999252}
+        )
+        assert response.status_code == 200
+        assert [c["id"] for c in response.json()["chats"]] == [str(wanted.id)]
+        assert response.json()["total"] == 1
+        missing = await auth_client.get(
+            "/api/v1/chats", params={"telegram_chat_id": -1001111111111}
+        )
+        assert missing.json()["chats"] == []
+        assert missing.json()["total"] == 0
+
     async def test_empty_list(self, auth_client):
         response = await auth_client.get("/api/v1/chats")
         assert response.status_code == 200

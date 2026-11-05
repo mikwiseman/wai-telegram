@@ -597,6 +597,25 @@ class TestCallTool:
         assert mock_api.execute_data_tool.await_args_list[1].args[1]["cursor"] == "page-2"
 
     @pytest.mark.asyncio
+    async def test_search_chats_resolves_exact_telegram_id_without_catalogue_scan(self):
+        mock_api = AsyncMock()
+        mock_api.list_chats.return_value = {
+            "chats": [
+                {
+                    "id": "resolved-chat",
+                    "title": "Exact conversation",
+                    "telegram_chat_id": -1001564999252,
+                    "chat_type": "supergroup",
+                }
+            ],
+            "total": 1,
+        }
+        with patch("telegram_wai_mcp.server.get_client", return_value=mock_api):
+            result = await server.call_tool("search_chats", {"query": "-1001564999252"})
+        assert "resolved-chat" in result[0].text
+        mock_api.list_chats.assert_awaited_once_with(telegram_chat_id=-1001564999252, limit=10)
+
+    @pytest.mark.asyncio
     async def test_search_chats_matches_title_and_username(self):
         mock_api = AsyncMock()
         page_1 = {

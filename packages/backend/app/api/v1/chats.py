@@ -129,6 +129,7 @@ async def list_chats(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     chat_type: ChatType | None = None,
+    telegram_chat_id: int | None = Query(default=None, ge=-(2**63), le=2**63 - 1),
     unread_only: bool = Query(default=False),
     limit: int = Query(default=100, ge=1, le=1000),
     cursor: str | None = Query(default=None),
@@ -137,6 +138,8 @@ async def list_chats(
     """List user's synced chats (cursor pagination, offset fallback)."""
     query = select(TelegramChat).where(TelegramChat.user_id == user.id)
 
+    if telegram_chat_id is not None:
+        query = query.where(TelegramChat.telegram_chat_id == telegram_chat_id)
     if chat_type:
         query = query.where(TelegramChat.chat_type == chat_type)
     if unread_only:
@@ -181,6 +184,10 @@ async def list_chats(
         .select_from(TelegramChat)
         .where(TelegramChat.user_id == user.id)
     )
+    if telegram_chat_id is not None:
+        count_query = count_query.where(
+            TelegramChat.telegram_chat_id == telegram_chat_id
+        )
     if chat_type:
         count_query = count_query.where(TelegramChat.chat_type == chat_type)
     if unread_only:

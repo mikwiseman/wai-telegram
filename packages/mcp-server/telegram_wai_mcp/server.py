@@ -429,7 +429,17 @@ async def _search_chats(
     query: str,
     limit: int,
 ) -> dict[str, Any]:
-    """Search chats by title/username using MCP-side filtering."""
+    """Resolve exact Telegram IDs or search chat titles/usernames."""
+    if re.fullmatch(r"-?[0-9]+", query.strip()):
+        telegram_chat_id = int(query.strip())
+        if not -(2**63) <= telegram_chat_id < 2**63:
+            raise ValueError("Telegram chat ID must fit in a signed 64-bit integer")
+        result = await api.list_chats(telegram_chat_id=telegram_chat_id, limit=limit)
+        return {
+            "query": query,
+            "total": result.get("total", len(result.get("chats", []))),
+            "chats": result.get("chats", []),
+        }
     chats_result = await _list_all_chats(api)
     matches: list[tuple[int, dict[str, Any]]] = []
 
@@ -922,7 +932,8 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="search_chats",
             description=(
-                "Find a chat by title, person name, or Telegram username. "
+                "Find a chat by title, person name, Telegram username, or exact numeric Telegram ID. "
+                "For event chat IDs, resolve here and use the returned internal chat UUID for reads and drafts. "
                 "Use this before get_chat_messages when the user asks about a specific person/chat. "
                 "This is more reliable than search_messages for exact person or username lookup."
             ),
@@ -931,7 +942,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Chat/person name or Telegram username to find",
+                        "description": "Chat/person name, Telegram username, or exact numeric Telegram chat ID",
                     },
                     "limit": {
                         "type": "integer",
