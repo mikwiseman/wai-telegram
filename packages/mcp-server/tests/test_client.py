@@ -43,6 +43,15 @@ class TestClamp:
         assert TelegramAIClient._clamp(200, 1, 100) == 100
 
 
+@pytest.mark.asyncio
+async def test_chat_lookup_passes_exact_provider_id(client):
+    with patch.object(client, "_request", new_callable=AsyncMock) as request:
+        await client.list_chats(telegram_chat_id=-1001564999252, limit=10)
+    request.assert_awaited_once_with(
+        "GET", "/api/v1/chats", params={"limit": 10, "telegram_chat_id": -1001564999252}
+    )
+
+
 class TestSearchMessages:
     @pytest.mark.asyncio
     async def test_search_basic(self, client):
