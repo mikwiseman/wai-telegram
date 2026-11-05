@@ -15,6 +15,7 @@ from telethon import TelegramClient
 from app.core.config import get_settings
 from app.core.database import get_db_context
 from app.models.chat import TelegramChat
+from app.services.correspondence_events import enqueue_media_ready, dispatch_events
 from app.models.message import (
     MediaProcessingStatus,
     MessageContentChunk,
@@ -825,6 +826,7 @@ async def _finalize_media(
     index: PreparedMediaContentIndex,
 ) -> None:
     now = datetime.now(UTC)
+    correspondence = False
     async with get_db_context() as db:
         message = (
             await db.execute(
@@ -878,6 +880,11 @@ async def _finalize_media(
         message.media_processing_error_code = None
         message.media_processing_error = None
         message.media_processed_at = now
+        chat = await db.get(TelegramChat, message.chat_id)
+        if chat is not None:
+            correspondence = await enqueue_media_ready(
+                db, chat, message.telegram_message_id, now
+            )
         media_object = (
             await db.execute(
                 select(MediaObject).where(MediaObject.message_id == job.id)
@@ -893,6 +900,9 @@ async def _finalize_media(
             media_object.indexed_at = now
             media_object.error_code = None
             media_object.error_detail = None
+
+    if correspondence:
+        dispatch_events()
 
 
 async def _load_active_job(

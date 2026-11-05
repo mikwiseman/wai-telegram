@@ -37,6 +37,7 @@ from app.models.settings import UserSettings
 from app.models.sync_job import SyncJob, SyncStatus
 from app.models.user import User
 from app.services.embedding_service import embed_messages
+from app.services.correspondence_events import enqueue_event, dispatch_events
 from app.services.media_content_service import get_media_info
 from app.services.media_cache_service import _cache_key, telegram_media_identity
 from app.services.single_user import is_user_active, lock_active_user
@@ -255,6 +256,7 @@ class TelegramListener:
         try:
             chat_id_tg = event.chat_id
             inserted_id = None
+            correspondence = False
 
             async with get_db_context() as db:
                 if not await lock_active_user(db, user_id):
@@ -340,6 +342,15 @@ class TelegramListener:
                 inserted = result.fetchone()
                 if inserted:
                     inserted_id = inserted[0]
+                    if not getattr(sender, "bot", False):
+                        correspondence = await enqueue_event(
+                            db,
+                            chat,
+                            message.id,
+                            "message.new",
+                            str(message.id),
+                            message.date,
+                        )
 
                 # Update chat's last_message_id and preview
                 if not chat.last_message_id or message.id > chat.last_message_id:
@@ -357,6 +368,9 @@ class TelegramListener:
                         select(func.count()).where(TelegramMessage.chat_id == chat.id)
                     )
                 ).scalar()
+
+            if correspondence:
+                dispatch_events()
 
             # Best-effort caption/text embedding in a separate session. Media
             # processing replaces it atomically with summary + content chunks.
@@ -376,6 +390,7 @@ class TelegramListener:
 
     async def _handle_edit(self, user_id: UUID, event) -> None:
         """Keep the previous version and update all searchable metadata."""
+        correspondence = False
         async with get_db_context() as db:
             if not await lock_active_user(db, user_id):
                 await self._stop_user(user_id)
@@ -435,6 +450,14 @@ class TelegramListener:
             )
             current.text = event.message.text
             current.edited_at = event.message.edit_date or datetime.now(UTC)
+            correspondence = await enqueue_event(
+                db,
+                chat,
+                current.telegram_message_id,
+                "message.updated",
+                current.edited_at.isoformat(),
+                current.edited_at,
+            )
             for field, value in metadata.items():
                 setattr(current, field, value)
             if info is not None:
@@ -490,11 +513,15 @@ class TelegramListener:
                 if media_changed or current.media_processing_status is None:
                     current.media_processing_status = MediaProcessingStatus.PENDING
 
+        if correspondence:
+            dispatch_events()
+
     async def _handle_delete(self, user_id: UUID, event) -> None:
         """Tombstone Telegram deletes; never erase the local archive."""
         deleted_ids = list(event.deleted_ids or [])
         if not deleted_ids:
             return
+        correspondence = False
         async with get_db_context() as db:
             if not await lock_active_user(db, user_id):
                 await self._stop_user(user_id)
@@ -522,6 +549,27 @@ class TelegramListener:
                 )
                 predicate = TelegramMessage.telegram_message_id.in_(deleted_ids)
 
+            affected = (
+                await db.execute(
+                    select(TelegramMessage, TelegramChat)
+                    .join(TelegramChat)
+                    .where(
+                        TelegramMessage.chat_id.in_(owner_chat_ids),
+                        predicate,
+                        TelegramMessage.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+            for message, chat in affected:
+                queued = await enqueue_event(
+                    db,
+                    chat,
+                    message.telegram_message_id,
+                    "message.deleted",
+                    "deleted",
+                    datetime.now(UTC),
+                )
+                correspondence = correspondence or queued
             await db.execute(
                 update(TelegramMessage)
                 .where(
@@ -529,8 +577,10 @@ class TelegramListener:
                     predicate,
                 )
                 .values(deleted_at=datetime.now(UTC))
-                .execution_options(synchronize_session=False)
+                .execution_options(synchronize_session="fetch")
             )
+        if correspondence:
+            dispatch_events()
 
     async def _handle_sync(self, cmd: dict):
         """Perform manual sync using existing sync_messages() function."""

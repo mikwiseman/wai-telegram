@@ -1,5 +1,6 @@
 from app.models.api_key import ApiKey
 from app.models.chat import TelegramChat
+from app.models.correspondence import CorrespondenceEvent
 from app.models.digest import DailyDigest
 from app.models.digital_agent import DigitalAgent
 from app.models.media import MediaObject, TranscriptSegment
@@ -17,6 +18,7 @@ __all__ = [
     "UserSettings",
     "TelegramSession",
     "TelegramChat",
+    "CorrespondenceEvent",
     "TelegramMessage",
     "MessageContentChunk",
     "MessageRevision",

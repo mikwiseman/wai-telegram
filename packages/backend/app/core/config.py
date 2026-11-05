@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7
     algorithm: str = "HS256"
     owner_user_id: UUID | None = None
+    correspondence_webhook_url: str = ""
+    correspondence_webhook_token: str = Field(default="", repr=False)
 
     # Rate limiting
     rate_limit_per_minute: int = 60

@@ -26,6 +26,7 @@ celery_app = Celery(
         "app.tasks.agent_tasks",
         "app.tasks.media_tasks",
         "app.tasks.embedding_tasks",
+        "app.tasks.correspondence_tasks",
     ],
 )
 
@@ -129,5 +130,10 @@ if settings.media_pipeline_enabled:
     beat_schedule["dispatch-pending-media"] = {
         "task": "app.tasks.media_tasks.dispatch_pending_media",
         "schedule": 15,  # Keep a small durable queue full without flooding Redis.
+    }
+if settings.correspondence_webhook_url:
+    beat_schedule["retry-correspondence-delivery"] = {
+        "task": "app.tasks.correspondence_tasks.deliver_correspondence_events",
+        "schedule": 60,  # Retry only accepted outbox events; never scan Telegram.
     }
 celery_app.conf.beat_schedule = beat_schedule
