@@ -518,9 +518,18 @@ jobs:
             [ "$attempt" -eq 12 ] && exit 1
             sleep 10
           done
-          celery_ping_output=$(runuser -u wai -- bash -c \
-            'cd /opt/wai-telegram/packages/backend && set -a && source /opt/wai-telegram/.env.production && set +a && /opt/wai-telegram/.venv/bin/celery -A app.tasks.celery_app:celery_app inspect ping --timeout=30')
-          [[ "$celery_ping_output" == *pong* ]]
+          # A broadcast sent before workers subscribe is lost; resend during startup.
+          celery_ready=0
+          for attempt in 1 2 3; do
+            if celery_ping_output=$(runuser -u wai -- bash -c \
+              'cd /opt/wai-telegram/packages/backend && set -a && source /opt/wai-telegram/.env.production && set +a && /opt/wai-telegram/.venv/bin/celery -A app.tasks.celery_app:celery_app inspect ping --timeout=30') \
+              && [[ "$celery_ping_output" == *pong* ]]; then
+              celery_ready=1
+              break
+            fi
+            [ "$attempt" -eq 3 ] || sleep 2
+          done
+          [ "$celery_ready" -eq 1 ]
           migration_started=2
           trap - EXIT
           EOF
