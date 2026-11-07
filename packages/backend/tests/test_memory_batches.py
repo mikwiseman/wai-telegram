@@ -231,6 +231,11 @@ async def test_postgres_memory_edits_deletion_scope_and_idempotent_import():
                         )
                         assert denied.results == []
 
+                    chat.title = "Renamed family"
+                    await db.flush()
+                    assert (await service.memory_status(user.id))["passages"] == 0
+                    assert await service.prepare_day() == 1
+                    assert (await service.memory_status(user.id))["passages"] == 1
                     # Revoking access makes current memory disappear immediately.
                     chat.indexing_enabled = False
                     await db.flush()
