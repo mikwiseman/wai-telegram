@@ -185,6 +185,7 @@ class TestEmbedMessages:
             ),
             patch("app.services.embedding_service.settings") as mock_settings,
         ):
+            mock_settings.memory_batch_enabled = False
             mock_settings.embedding_batch_size = 100
 
             result = await embed_messages(db, [uuid4(), uuid4()])
@@ -223,6 +224,7 @@ class TestEmbedMessages:
             ),
             patch("app.services.embedding_service.settings") as mock_settings,
         ):
+            mock_settings.memory_batch_enabled = False
             mock_settings.embedding_batch_size = 100
 
             result = await embed_messages(db, [uuid4()])
@@ -267,6 +269,7 @@ class TestEmbedMessages:
             ),
             patch("app.services.embedding_service.settings") as mock_settings,
         ):
+            mock_settings.memory_batch_enabled = False
             mock_settings.embedding_batch_size = 1  # Force one message per batch
 
             result = await embed_messages(db, [uuid4(), uuid4()])
@@ -311,6 +314,7 @@ class TestEmbedMessages:
             ),
             patch("app.services.embedding_service.settings") as mock_settings,
         ):
+            mock_settings.memory_batch_enabled = False
             mock_settings.embedding_batch_size = 2
 
             result = await embed_messages(db, [uuid4() for _ in range(5)])
@@ -355,6 +359,7 @@ class TestEmbedMessages:
             ),
             patch("app.services.embedding_service.settings") as mock_settings,
         ):
+            mock_settings.memory_batch_enabled = False
             mock_settings.embedding_batch_size = 100
 
             result = await embed_messages(db, [uuid4(), uuid4(), uuid4()])

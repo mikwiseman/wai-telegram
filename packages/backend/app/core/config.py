@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
     embedding_batch_size: int = 100
+    memory_batch_enabled: bool = False
+    memory_search_enabled: bool = False
+    memory_batch_organization: str | None = None
+    memory_batch_queue_tokens: int = 20_000_000
     generation_model: str = "gpt-5.6-luna"
     fast_generation_reasoning_effort: Literal[
         "none", "low", "medium", "high", "xhigh", "max"

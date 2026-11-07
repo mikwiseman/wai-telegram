@@ -20,13 +20,13 @@ settings = get_settings()
 @dataclass(frozen=True)
 class PreparedContentChunk:
     text: str
-    embedding: list[float]
+    embedding: list[float] | None
 
 
 @dataclass(frozen=True)
 class PreparedMediaContentIndex:
     message_text: str
-    message_embedding: list[float]
+    message_embedding: list[float] | None
     chunks: list[PreparedContentChunk]
 
 
@@ -94,6 +94,16 @@ async def prepare_media_content_index(
         max_chars=settings.media_embedding_chunk_chars,
         overlap_chars=settings.media_embedding_chunk_overlap_chars,
     )
+    if settings.memory_batch_enabled:
+        # Save searchable source text now. The transaction's memory trigger
+        # queues the shared large-model Batch index without a second API spend.
+        return PreparedMediaContentIndex(
+            message_text=message_text,
+            message_embedding=None,
+            chunks=[
+                PreparedContentChunk(text=value, embedding=None) for value in chunks
+            ],
+        )
     inputs = [message_text, *chunks]
     embeddings: list[list[float]] = []
     for start in range(0, len(inputs), settings.embedding_batch_size):
@@ -118,6 +128,8 @@ async def prepare_media_content_index(
 
 async def embed_messages(db: AsyncSession, message_ids: list[UUID]) -> int:
     """Bound both database reads and provider calls; failed rows remain retryable."""
+    if settings.memory_batch_enabled:
+        return 0
     embedded_count = 0
     size = settings.embedding_batch_size
     for start in range(0, len(message_ids), size):
@@ -201,4 +213,22 @@ async def generate_query_embedding(query: str) -> list[float]:
         _QUERY_CACHE[key] = vector
         if len(_QUERY_CACHE) > _QUERY_CACHE_MAX:
             _QUERY_CACHE.popitem(last=False)
+    return vector
+
+
+async def generate_memory_query_embedding(query: str) -> list[float]:
+    from app.services.memory_passages import DIMENSIONS, MODEL
+
+    key = f"{MODEL}:{DIMENSIONS}:{query.strip()}"
+    if key in _QUERY_CACHE:
+        _QUERY_CACHE.move_to_end(key)
+        return _QUERY_CACHE[key]
+    client = await get_openai_client()
+    response = await client.embeddings.create(
+        model=MODEL, dimensions=DIMENSIONS, input=[query.strip()]
+    )
+    vector = response.data[0].embedding
+    _QUERY_CACHE[key] = vector
+    if len(_QUERY_CACHE) > _QUERY_CACHE_MAX:
+        _QUERY_CACHE.popitem(last=False)
     return vector

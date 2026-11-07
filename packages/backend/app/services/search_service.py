@@ -15,7 +15,10 @@ from app.schemas.search import (
     SearchResponse,
     SearchResultItem,
 )
-from app.services.embedding_service import generate_query_embedding
+from app.services.embedding_service import (
+    generate_query_embedding,
+    generate_memory_query_embedding,
+)
 from app.services.telegram_links import (
     build_media_download_url,
     build_telegram_message_url,
@@ -54,7 +57,11 @@ def _base_where_clauses(
     user_id: UUID,
     request: SearchRequest,
 ) -> tuple[list[str], dict[str, object]]:
-    where_clauses = ["c.user_id = :user_id", "c.indexing_enabled IS TRUE"]
+    where_clauses = [
+        "c.user_id = :user_id",
+        "c.indexing_enabled IS TRUE",
+        "m.deleted_at IS NULL",
+    ]
     offset = _search_offset(request.cursor)
     params: dict[str, object] = {
         "user_id": str(user_id),
@@ -165,7 +172,7 @@ def _rows_to_response(
     )
 
 
-def _hybrid_search_sql(dimensions: int, where_sql: str):
+def _hybrid_search_sql(dimensions: int, where_sql: str, *, memory: bool = False):
     """Build simple-FTS + trigram + pgvector retrieval fused with RRF.
 
     The trigram operator is applied to media_file_name only. Running it against
@@ -175,6 +182,67 @@ def _hybrid_search_sql(dimensions: int, where_sql: str):
     short and fuzzy-matching them is both cheap (~40ms) and the point. Metadata
     is still matched by full-text search and by ILIKE, which cost ~35ms each.
     """
+    if memory:
+        vector_sql = f"""
+        memory_candidates AS (
+            SELECT p.message_ids,p.text,
+                1-(p.embedding <=> CAST(:embedding AS halfvec(3072))) AS vector_score
+            FROM memory_passages p
+            JOIN memory_days d ON d.chat_id=p.chat_id AND d.day=p.day
+            JOIN telegram_chats c ON c.id=p.chat_id
+            JOIN users u ON u.id=c.user_id
+            WHERE p.embedding IS NOT NULL AND p.user_id=c.user_id
+                AND c.indexing_enabled AND u.is_active
+                AND p.revision=d.revision AND d.prepared_revision=d.revision
+                AND EXISTS (
+                    SELECT 1 FROM telegram_messages m
+                    WHERE m.id=ANY(p.message_ids) AND m.chat_id=p.chat_id AND {where_sql}
+                )
+            ORDER BY p.embedding <=> CAST(:embedding AS halfvec(3072))
+            LIMIT :candidate_limit
+        ),
+        vector_raw AS (
+            SELECT chosen.id AS message_id,p.vector_score,left(p.text,1200) AS matched_content
+            FROM memory_candidates p
+            CROSS JOIN LATERAL (
+                SELECT m.id FROM telegram_messages m
+                JOIN telegram_chats c ON c.id=m.chat_id
+                WHERE m.id=ANY(p.message_ids) AND {where_sql}
+                ORDER BY ts_rank_cd(m.search_vector,websearch_to_tsquery('simple',:query),32) DESC,
+                    m.sent_at DESC,m.telegram_message_id DESC
+                LIMIT 1
+            ) chosen
+        ),
+        vector_chunks AS (SELECT * FROM vector_raw WHERE false),
+        """
+    else:
+        vector_sql = f"""
+        vector_raw AS (
+            SELECT
+                m.id AS message_id,
+                1 - (m.embedding <=> cast(:embedding AS halfvec({dimensions})))
+                    AS vector_score,
+                NULL::text AS matched_content
+            FROM telegram_messages m
+            JOIN telegram_chats c ON c.id = m.chat_id
+            WHERE {where_sql} AND m.embedding IS NOT NULL
+            ORDER BY m.embedding <=> cast(:embedding AS halfvec({dimensions}))
+            LIMIT :candidate_limit
+        ),
+        vector_chunks AS (
+            SELECT
+                m.id AS message_id,
+                1 - (mc.embedding <=> cast(:embedding AS halfvec({dimensions})))
+                    AS vector_score,
+                left(mc.text, 1200) AS matched_content
+            FROM message_content_chunks mc
+            JOIN telegram_messages m ON m.id = mc.message_id
+            JOIN telegram_chats c ON c.id = m.chat_id
+            WHERE {where_sql} AND mc.embedding IS NOT NULL
+            ORDER BY mc.embedding <=> cast(:embedding AS halfvec({dimensions}))
+            LIMIT :candidate_limit
+        ),
+        """
     return text(f"""
         WITH search_query AS (
             SELECT websearch_to_tsquery('simple', :query) AS tsq
@@ -229,31 +297,7 @@ def _hybrid_search_sql(dimensions: int, where_sql: str):
             ORDER BY lexical_score DESC, message_id DESC
             LIMIT :candidate_limit
         ),
-        vector_raw AS (
-            SELECT
-                m.id AS message_id,
-                1 - (m.embedding <=> cast(:embedding AS halfvec({dimensions})))
-                    AS vector_score,
-                NULL::text AS matched_content
-            FROM telegram_messages m
-            JOIN telegram_chats c ON c.id = m.chat_id
-            WHERE {where_sql} AND m.embedding IS NOT NULL
-            ORDER BY m.embedding <=> cast(:embedding AS halfvec({dimensions}))
-            LIMIT :candidate_limit
-        ),
-        vector_chunks AS (
-            SELECT
-                m.id AS message_id,
-                1 - (mc.embedding <=> cast(:embedding AS halfvec({dimensions})))
-                    AS vector_score,
-                left(mc.text, 1200) AS matched_content
-            FROM message_content_chunks mc
-            JOIN telegram_messages m ON m.id = mc.message_id
-            JOIN telegram_chats c ON c.id = m.chat_id
-            WHERE {where_sql} AND mc.embedding IS NOT NULL
-            ORDER BY mc.embedding <=> cast(:embedding AS halfvec({dimensions}))
-            LIMIT :candidate_limit
-        ),
+        {vector_sql}
         vector_best AS (
             SELECT DISTINCT ON (message_id)
                 message_id, vector_score, matched_content
@@ -450,7 +494,11 @@ async def semantic_search(
         )
 
     try:
-        query_embedding = await generate_query_embedding(normalized_query)
+        query_embedding = await (
+            generate_memory_query_embedding(normalized_query)
+            if settings.memory_search_enabled
+            else generate_query_embedding(normalized_query)
+        )
     except Exception as exc:
         logger.exception(
             "Hybrid search embedding generation failed",
@@ -468,6 +516,7 @@ async def semantic_search(
     sql = _hybrid_search_sql(
         settings.embedding_dimensions,
         where_sql,
+        memory=settings.memory_search_enabled,
     )
     try:
         await db.execute(text("SET LOCAL hnsw.iterative_scan = 'strict_order'"))

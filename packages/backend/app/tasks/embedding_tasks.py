@@ -57,3 +57,19 @@ def repair_embeddings() -> dict:
         return {"indexed": 0, "busy": True}
     finally:
         client.close()
+
+
+@shared_task(soft_time_limit=540, time_limit=570)
+def advance_memory_batches() -> dict:
+    from app.services.memory_batch_service import run_memory_batch_pass
+
+    if not get_settings().memory_batch_enabled:
+        return {"enabled": False}
+    client = redis.from_url(get_settings().redis_url)
+    try:
+        with client.lock("memory:batch", timeout=600, blocking_timeout=0):
+            return run_async(run_memory_batch_pass())
+    except redis.exceptions.LockError:
+        return {"busy": True}
+    finally:
+        client.close()

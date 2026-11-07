@@ -22,6 +22,7 @@ async def test_media_index_embeds_summary_and_every_content_chunk():
     ):
         settings.media_embedding_chunk_chars = 12
         settings.media_embedding_chunk_overlap_chars = 2
+        settings.memory_batch_enabled = False
         settings.embedding_batch_size = 100
         prepared = await prepare_media_content_index(
             caption="Caption",
@@ -46,6 +47,7 @@ async def test_media_index_rejects_partial_embedding_response():
     ):
         settings.media_embedding_chunk_chars = 100
         settings.media_embedding_chunk_overlap_chars = 10
+        settings.memory_batch_enabled = False
         settings.embedding_batch_size = 100
         with pytest.raises(RuntimeError, match="expected 2 embeddings"):
             await prepare_media_content_index(

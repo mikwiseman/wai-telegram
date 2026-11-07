@@ -27,6 +27,7 @@ dependencies = [
     "sentry-sdk[fastapi]>=2.0.0",  # Error tracking
     "markitdown[pdf,docx,pptx,xlsx,xls,outlook]==0.1.7",
     "croniter>=2.0.0",  # Cron expression parsing for digital agents
+    "tiktoken>=0.12,<1",
 ]
 
 [project.optional-dependencies]
