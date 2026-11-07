@@ -1698,8 +1698,9 @@ def format_search_results(
     for r in result.get("results", []):
         sender = r.get("sender_name") or ("You" if r.get("is_outgoing") else "Unknown")
         text = _format_media_label(r)
-        if r.get("content_summary") and r.get("content_preview"):
-            text += f" | Matching content: {r['content_preview']}"
+        preview = r.get("content_preview")
+        if preview and preview not in text:
+            text += f"\n  Matching context:\n{preview}"
         similarity = r.get("similarity", 0) * 100
         sent_at = _format_date(r.get("sent_at"))
         chat_title = r.get("chat_title") or "Unknown"

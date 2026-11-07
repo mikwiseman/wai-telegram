@@ -7,6 +7,33 @@ from mcp.types import CallToolResult
 from telegram_wai_mcp import server
 
 
+def test_search_preserves_full_memory_context_for_plain_text_messages():
+    passage = "[2026-11-07T10:00+00:00] Mik: Earlier discussion. " * 30
+    passage += "\n[2026-11-07T10:30+00:00] Alisa: Correction: the visit is in the evening."
+    result = server.format_search_results(
+        {
+            "query": "when should we visit",
+            "total": 1,
+            "results": [
+                {
+                    "text": "Thanks",
+                    "sender_name": "Mik",
+                    "chat_title": "Family",
+                    "telegram_message_id": 43,
+                    "chat_id": "family",
+                    "sent_at": "2026-11-07T10:31Z",
+                    "content_preview": passage,
+                    "content_summary": None,
+                    "media_type": None,
+                }
+            ],
+        }
+    )[0].text
+    assert "Mik: Thanks" in result
+    assert passage in result
+    assert "Alisa: Correction: the visit is in the evening." in result
+
+
 def _registry_client():
     client = AsyncMock()
     names = (
