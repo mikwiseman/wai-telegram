@@ -37,6 +37,8 @@ class Passage:
 
 def _pieces(value: str, budget: int):
     """Split at character boundaries, keeping whitespace and Unicode intact."""
+    if budget < 1:
+        raise ValueError("Passage token budget must be positive")
     while value:
         high = min(len(value), budget * 12)
         if token_count(value[:high]) <= budget:
@@ -115,7 +117,7 @@ def build_passages(chat_title: str, messages: list[dict]) -> list[Passage]:
                     + f"[extracted {row.get('media_file_name') or 'content'}]\n"
                 )
                 # Filenames are data too, but cannot consume the full context.
-                header = header[:800]
+                header = next(_pieces(header, MAX_TOKENS // 3))
                 for piece in _pieces(content, MAX_TOKENS - token_count(header) - 8):
                     result.append(_passage(header + piece, [piece], [row["id"]]))
         flush()

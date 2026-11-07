@@ -137,3 +137,14 @@ def test_search_rechecks_current_source_revision_and_scope():
     assert "c.indexing_enabled" in sql
     assert "m.deleted_at IS NULL" in sql
     assert "m.embedding <=>" not in sql
+
+
+def test_unicode_metadata_cannot_exceed_the_embedding_token_budget():
+    item = message(
+        None,
+        sender_name="🧬" * 120,
+        media_file_name="🧬" * 512,
+        content_text="Original document text " * 200,
+    )
+    result = build_passages("🧬" * 160, [item])
+    assert all(0 < p.tokens <= MAX_TOKENS for p in result)
