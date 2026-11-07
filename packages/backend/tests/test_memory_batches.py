@@ -181,7 +181,10 @@ async def test_postgres_memory_edits_deletion_scope_and_idempotent_import():
                     claim = await service._claim_batch()
                     old_id = claim["passages"][0]["id"]
                     # A correction arrives while OpenAI is processing the old passage.
-                    msg.text = "Correction: the visit is in the evening"
+                    msg.text = (
+                        "Prior discussion. " * 90
+                        + "Correction: the visit is in the evening"
+                    )
                     await db.flush()
                     assert (await service.memory_status(user.id))["passages"] == 0
                     remote = SimpleNamespace(output_file_id="result")
@@ -226,6 +229,10 @@ async def test_postgres_memory_edits_deletion_scope_and_idempotent_import():
                             db, user.id, SearchRequest(query="evening visit")
                         )
                         assert any(hit.id == msg.id for hit in found.results)
+                        hit = next(hit for hit in found.results if hit.id == msg.id)
+                        assert hit.content_preview.endswith(
+                            "Correction: the visit is in the evening"
+                        )
                         denied = await search_service.semantic_search(
                             db, uuid4(), SearchRequest(query="evening visit")
                         )

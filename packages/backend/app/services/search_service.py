@@ -202,7 +202,7 @@ def _hybrid_search_sql(dimensions: int, where_sql: str, *, memory: bool = False)
             LIMIT :candidate_limit
         ),
         vector_raw AS (
-            SELECT chosen.id AS message_id,p.vector_score,left(p.text,1200) AS matched_content
+            SELECT chosen.id AS message_id,p.vector_score,p.text AS matched_content
             FROM memory_candidates p
             CROSS JOIN LATERAL (
                 SELECT m.id FROM telegram_messages m
