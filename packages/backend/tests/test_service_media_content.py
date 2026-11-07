@@ -422,7 +422,12 @@ class TestVideoTimeline:
                 interval.parent.mkdir(exist_ok=True)
                 interval.write_bytes(b"jpg")
                 return 0, ""
-            return 1, "scene decoder failed"
+            return (
+                1,
+                "ffmpeg build banner\n"
+                + "configuration " * 50
+                + "\nscene decoder failed",
+            )
 
         with (
             patch(
@@ -437,7 +442,7 @@ class TestVideoTimeline:
         ):
             mock_settings.video_frame_interval_seconds = 30
             mock_settings.video_scene_threshold = 0.3
-            with pytest.raises(MediaProcessingError, match="scene-change"):
+            with pytest.raises(MediaProcessingError, match="scene decoder failed"):
                 await extract_video_frames(source)
 
     async def test_clip_shorter_than_the_interval_falls_back_to_one_frame(
@@ -481,3 +486,6 @@ class TestVideoTimeline:
         assert any("-frames:v" in call for call in calls), (
             "expected the single-frame fallback"
         )
+        # Modern ffmpeg rejects limited-range YUV for MJPEG. Both sampling paths
+        # and the short-clip fallback must request a valid JPEG pixel format.
+        assert all("-pix_fmt" in call and "yuvj420p" in call for call in calls)

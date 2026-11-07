@@ -633,6 +633,8 @@ async def extract_video_frames(path: Path) -> list[VideoFrame]:
         str(path),
         "-vf",
         f"fps=1/{settings.video_frame_interval_seconds}",
+        "-pix_fmt",
+        "yuvj420p",
         "-q:v",
         "3",
         "-y",
@@ -653,6 +655,8 @@ async def extract_video_frames(path: Path) -> list[VideoFrame]:
             str(path),
             "-frames:v",
             "1",
+            "-pix_fmt",
+            "yuvj420p",
             "-q:v",
             "3",
             "-y",
@@ -660,7 +664,7 @@ async def extract_video_frames(path: Path) -> list[VideoFrame]:
         )
         interval_paths = sorted(output_dir.glob("interval-*.jpg"))
     if interval_code != 0 or not interval_paths:
-        detail = interval_error.strip()[:300]
+        detail = interval_error.strip()[-300:]
         raise MediaProcessingError(
             f"Video frame extraction failed{': ' + detail if detail else ''}"
         )
@@ -677,13 +681,15 @@ async def extract_video_frames(path: Path) -> list[VideoFrame]:
         (f"select='gt(scene,{settings.video_scene_threshold})',showinfo"),
         "-fps_mode",
         "vfr",
+        "-pix_fmt",
+        "yuvj420p",
         "-q:v",
         "3",
         "-y",
         str(scene_pattern),
     )
     if scene_code != 0:
-        detail = scene_error.strip()[:300]
+        detail = scene_error.strip()[-300:]
         raise MediaProcessingError(
             f"Video scene-change extraction failed{': ' + detail if detail else ''}"
         )
