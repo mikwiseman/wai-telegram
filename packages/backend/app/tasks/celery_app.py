@@ -105,6 +105,10 @@ def configure_celery_beat_observability(**_kwargs):
 
 # Beat schedule
 beat_schedule = {
+    "advance-memory-batches": {
+        "task": "app.tasks.embedding_tasks.advance_memory_batches",
+        "schedule": 60,
+    },
     "repair-selected-embeddings": {
         "task": "app.tasks.embedding_tasks.repair_embeddings",
         "schedule": 60,

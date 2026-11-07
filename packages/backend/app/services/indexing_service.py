@@ -93,7 +93,16 @@ async def get_indexing_status(db: AsyncSession, user_id: UUID) -> dict:
         .scalars()
         .all()
     )
+    from app.core.config import get_settings
+
+    memory = None
+    if get_settings().memory_batch_enabled:
+        from app.services.memory_batch_service import memory_status
+
+        memory = await memory_status(user_id)
+        memory["search_active"] = get_settings().memory_search_enabled
     return {
+        "memory": memory,
         "auto_index_since": account.auto_index_since if account else None,
         "pause_reason": None if indexing_has_capacity() else "disk_space",
         "chats": [
