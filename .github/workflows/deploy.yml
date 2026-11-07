@@ -25,7 +25,8 @@ on:
         default: full
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # A new commit may cancel old CI, but never a deployment's backup or cutover.
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'deploy' || 'ci' }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
