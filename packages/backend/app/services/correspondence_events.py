@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ from app.models.correspondence import CorrespondenceEvent
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
+BATCH_SIZE = 10
 
 
 def destination():
@@ -139,7 +140,7 @@ async def deliver_batch(db: AsyncSession, client: httpx.AsyncClient) -> int:
                 TelegramChat.indexing_enabled.is_(True),
             )
             .order_by(CorrespondenceEvent.next_attempt_at, CorrespondenceEvent.id)
-            .limit(10)
+            .limit(BATCH_SIZE)
             .with_for_update(skip_locked=True, of=CorrespondenceEvent)
         )
     ).all()
@@ -169,4 +170,18 @@ async def deliver_batch(db: AsyncSession, client: httpx.AsyncClient) -> int:
             continue
         event.delivered_at = datetime.now(UTC)
         delivered += 1
+    if delivered:
+        # The receiver answers. Events that failed while it was away each backed off on
+        # their own and would arrive scattered over an hour, so the receiver re-read one
+        # conversation once per event. Make the rest due now: they arrive together.
+        await db.execute(
+            update(CorrespondenceEvent)
+            .where(
+                CorrespondenceEvent.delivered_at.is_(None),
+                CorrespondenceEvent.revoked.is_(False),
+                CorrespondenceEvent.user_id == owner,
+                CorrespondenceEvent.next_attempt_at > now,
+            )
+            .values(next_attempt_at=now)
+        )
     return delivered
