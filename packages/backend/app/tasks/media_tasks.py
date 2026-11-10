@@ -4,7 +4,7 @@ from email.utils import parsedate_to_datetime
 from uuid import UUID
 
 from celery import shared_task
-from sqlalchemy import case, func, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from telethon.errors import FloodWaitError
 
 from app.core.async_runner import run_async
@@ -235,8 +235,9 @@ async def _find_pending_and_reap_stale() -> list[UUID]:
             .join(User, User.id == TelegramChat.user_id)
             .where(User.is_active.is_(True), TelegramChat.indexing_enabled.is_(True))
         )
-        # Recover only very old dispatch claims. Normal broker backlog remains
-        # queued; duplicate delivery is still protected by the processing claim.
+        # Recover only very old dispatch claims and retries that never ran.
+        # Normal broker backlog remains queued; duplicate delivery is still
+        # protected by the processing claim.
         await db.execute(
             update(TelegramMessage)
             .where(
@@ -286,15 +287,21 @@ async def _find_pending_and_reap_stale() -> list[UUID]:
                     retry_after=None,
                 )
             )
+        # A queued row counts once its start is due. A row waiting for a retry
+        # carries the retry time as its start, so a day-long wait holds no slot:
+        # twenty failing files once stopped every new voice message.
         active_count = (
             await db.execute(
                 select(func.count()).where(
                     TelegramMessage.id.in_(active_message_ids),
-                    TelegramMessage.media_processing_status.in_(
-                        (
-                            MediaProcessingStatus.QUEUED,
-                            MediaProcessingStatus.PROCESSING,
-                        )
+                    or_(
+                        TelegramMessage.media_processing_status
+                        == MediaProcessingStatus.PROCESSING,
+                        and_(
+                            TelegramMessage.media_processing_status
+                            == MediaProcessingStatus.QUEUED,
+                            TelegramMessage.media_processing_started_at <= now,
+                        ),
                     ),
                 )
             )

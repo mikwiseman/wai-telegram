@@ -10,6 +10,7 @@ from app.models.chat import ChatType, TelegramChat
 from app.models.media import MediaObject, MediaObjectStatus, MediaStage
 from app.models.message import MediaProcessingStatus, TelegramMessage
 from app.models.user import User
+from app.services.media_processing_service import mark_media_retry
 from app.tasks.media_tasks import (
     RETRY_DELAYS_SECONDS,
     _exact_retry_after,
@@ -446,6 +447,84 @@ async def test_dispatch_prioritizes_live_pending_media_over_historical_backfill(
     assert claimed == [live_photo.id]
     assert live_photo.media_processing_status == MediaProcessingStatus.QUEUED
     assert historical_voice.media_processing_status is None
+
+
+async def test_media_waiting_for_a_retry_holds_no_dispatch_slot(db_session, test_user):
+    chat = TelegramChat(
+        indexing_enabled=True,
+        user_id=test_user.id,
+        telegram_chat_id=327,
+        chat_type=ChatType.PRIVATE,
+        title="Retry wait",
+    )
+    db_session.add(chat)
+    await db_session.flush()
+    now = datetime.now(UTC)
+    failing_photo = TelegramMessage(
+        chat_id=chat.id,
+        telegram_message_id=661,
+        has_media=True,
+        media_type="photo",
+        media_processing_status=MediaProcessingStatus.PROCESSING,
+        media_processing_started_at=now,
+        sent_at=now,
+    )
+    # Its retry was due seven hours ago and never ran: the broker lost it.
+    lost_retry = TelegramMessage(
+        chat_id=chat.id,
+        telegram_message_id=662,
+        has_media=True,
+        media_type="photo",
+        media_processing_status=MediaProcessingStatus.QUEUED,
+        media_processing_started_at=now - timedelta(hours=7),
+        sent_at=now,
+    )
+    new_voice = TelegramMessage(
+        chat_id=chat.id,
+        telegram_message_id=663,
+        has_media=True,
+        media_type="voice",
+        media_processing_status=MediaProcessingStatus.PENDING,
+        sent_at=now,
+    )
+    db_session.add_all([failing_photo, lost_retry, new_voice])
+    await db_session.flush()
+
+    @asynccontextmanager
+    async def test_db_context():
+        yield db_session
+
+    with patch(
+        "app.services.media_processing_service.get_db_context",
+        side_effect=test_db_context,
+    ):
+        await mark_media_retry(failing_photo.id, RuntimeError("unsupported"), 86_400)
+    await db_session.refresh(failing_photo)
+
+    # The retry is a day away: the row records when it is due.
+    assert failing_photo.media_processing_status == MediaProcessingStatus.QUEUED
+    retry_due = failing_photo.media_processing_started_at
+    assert retry_due is not None
+    assert retry_due.replace(tzinfo=UTC) > now + timedelta(hours=23)
+
+    with (
+        patch("app.tasks.media_tasks.get_db_context", side_effect=test_db_context),
+        patch("app.tasks.media_tasks.settings") as task_settings,
+    ):
+        task_settings.media_queue_stale_minutes = 360
+        task_settings.media_processing_stale_minutes = 120
+        task_settings.media_dispatch_target_depth = 1
+        first = await _find_pending_and_reap_stale()
+        task_settings.media_dispatch_target_depth = 2
+        second = await _find_pending_and_reap_stale()
+    await db_session.refresh(failing_photo)
+
+    # One slot, and the waiting photo does not take it: the new voice message goes.
+    assert first == [new_voice.id]
+    # The lost retry came back to pending and is dispatched when a slot opens.
+    assert second == [lost_retry.id]
+    assert failing_photo.media_processing_status == MediaProcessingStatus.QUEUED
+    assert failing_photo.media_processing_started_at == retry_due
 
 
 async def test_stale_processing_job_is_requeued_instead_of_failed(

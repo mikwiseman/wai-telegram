@@ -1139,7 +1139,9 @@ async def mark_media_retry(
                 media_processing_status=MediaProcessingStatus.QUEUED,
                 media_processing_error_code=code,
                 media_processing_error=detail,
-                media_processing_started_at=None,
+                # When the retry is due. Until then the row holds no dispatch
+                # slot, and the dispatcher recovers it if the retry never runs.
+                media_processing_started_at=retry_at,
             )
         )
         obj = (
