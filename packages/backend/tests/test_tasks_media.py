@@ -40,6 +40,18 @@ def test_retry_after_provider_value_overrides_the_schedule():
     assert _exact_retry_after(header_error) == 654
 
 
+def test_media_that_is_not_a_file_fails_at_once():
+    # Telethon raises this for a link preview or a poll: there is nothing to download, now or after a retry.
+    error = TypeError(
+        "Cannot cast MessageMediaWebPage to any kind of InputFileLocation."
+    )
+    assert _is_terminal_error(error)
+    wrapped = RuntimeError("fetch failed")
+    wrapped.__cause__ = error
+    assert _is_terminal_error(wrapped)
+    assert not _is_terminal_error(TypeError("unsupported operand"))
+
+
 def test_retry_path_checkpoints_before_rescheduling():
     message_id = uuid4()
     error = RuntimeError("temporary")

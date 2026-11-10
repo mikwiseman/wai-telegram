@@ -14,6 +14,23 @@ readonly PASSPHRASE_FILE="/etc/wai-telegram/auth-backup-passphrase"
     exit 1
 }
 
+# The dump is written next to the previous one, which stays until the new one is verified.
+# Refuse to start when it cannot fit: a full disk stops the database on this same volume.
+mkdir -p "$BACKUP_ROOT"
+previous_dump=$(ls -t "$BACKUP_ROOT"/auth-cutover-*/database.dump.gpg 2>/dev/null | head -n 1 || true)
+if [ -n "$previous_dump" ]; then
+    expected_bytes=$(( $(stat -c %s "$previous_dump") * 12 / 10 ))
+else
+    expected_bytes=$(docker exec "$DATABASE_CONTAINER" psql --username telegram --dbname telegram_ai \
+        --tuples-only --no-align --command "select pg_database_size(current_database())")
+fi
+free_bytes=$(df --output=avail -B1 "$BACKUP_ROOT" | tail -n 1)
+reserve_bytes=$((3 * 1024 * 1024 * 1024))
+[ "$free_bytes" -ge $((expected_bytes + reserve_bytes)) ] || {
+    echo "Not enough disk space for the backup: about $((expected_bytes / 1000000000)) GB needed plus 3 GB reserve, $((free_bytes / 1000000000)) GB free" >&2
+    exit 1
+}
+
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 destination="$BACKUP_ROOT/auth-cutover-$timestamp"
 incomplete_destination="$BACKUP_ROOT/.auth-cutover-$timestamp.incomplete"

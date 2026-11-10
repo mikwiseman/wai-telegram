@@ -87,6 +87,9 @@ def _is_terminal_error(error: Exception) -> bool:
             ),
         ):
             return True
+        # A link preview or a poll is not a file: Telethon cannot build a download location for it.
+        if isinstance(current, TypeError) and "InputFileLocation" in str(current):
+            return True
         current = current.__cause__
     return False
 

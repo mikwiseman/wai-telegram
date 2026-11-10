@@ -108,6 +108,40 @@ async def test_delivery_retries_the_same_event_after_timeout_and_accepts_readbac
     assert row.delivered_at is not None
 
 
+async def test_first_delivery_after_an_outage_makes_the_whole_backlog_due(
+    db_session, test_user, monkeypatch
+):
+    configure(monkeypatch, test_user.id)
+    chat = TelegramChat(
+        user_id=test_user.id,
+        telegram_chat_id=124,
+        chat_type=ChatType.PRIVATE,
+        indexing_enabled=True,
+        title="Person",
+    )
+    db_session.add(chat)
+    await db_session.flush()
+    for message_id in (1, 2, 3):
+        await enqueue_event(
+            db_session, chat, message_id, "message.new", "v1", datetime.now(UTC)
+        )
+    post = AsyncMock(side_effect=httpx.ConnectError("receiver is off"))
+    client = type("Client", (), {"post": post})()
+    assert await deliver_batch(db_session, client) == 0
+    rows = (await db_session.scalars(select(CorrespondenceEvent))).all()
+    # Each failed event backs off on its own, so they would come due at scattered times.
+    assert all(row.next_attempt_at > datetime.now(UTC) for row in rows)
+    rows[0].next_attempt_at = datetime.now(UTC)
+    post.side_effect = None
+    post.return_value = httpx.Response(202, json={"accepted": True})
+    assert await deliver_batch(db_session, client) == 1
+    # The receiver answers again: the rest is due now, so one conversation is read once, not once per event.
+    assert all(
+        row.delivered_at or row.next_attempt_at <= datetime.now(UTC) for row in rows
+    )
+    assert await deliver_batch(db_session, client) == 2
+
+
 async def test_destination_change_does_not_replay_private_backlog_to_a_new_destination(
     db_session, test_user, monkeypatch
 ):
