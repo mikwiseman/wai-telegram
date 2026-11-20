@@ -1557,16 +1557,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent] |
 
         elif name == "save_draft":
             chat_id = _require_str(args, "chat_id")
-            files = {key: args[key] for key in ("file_name", "file_url", "file_base64") if key in args}
+            files = {
+                key: args[key] for key in ("file_name", "file_url", "file_base64") if key in args
+            }
             if files and ("file_name" not in files or len(files) != 2):
-                raise ValueError("Draft attachments require file_name and exactly one of file_url or file_base64")
+                raise ValueError(
+                    "Draft attachments require file_name and exactly one of file_url or file_base64"
+                )
             text = args.get("text") if files else _require_str(args, "text")
             if not isinstance(text, str):
                 raise ValueError("text must be a string")
-            result = await api.execute_data_tool("save_draft", {"chat_id": chat_id, "text": text, **files})
+            result = await api.execute_data_tool(
+                "save_draft", {"chat_id": chat_id, "text": text, **files}
+            )
             if files:
-                if (result.get("saved") is not True or result.get("sent") is not False
-                        or len(result.get("attachments") or []) != 1):
+                if (
+                    result.get("saved") is not True
+                    or result.get("sent") is not False
+                    or len(result.get("attachments") or []) != 1
+                ):
                     raise ValueError("Backend did not confirm the native draft attachment")
                 return CallToolResult(
                     content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False))],
