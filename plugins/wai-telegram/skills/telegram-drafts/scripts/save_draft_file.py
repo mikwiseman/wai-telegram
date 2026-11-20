@@ -152,6 +152,25 @@ def save_draft_file(
         client.close()
 
 
+def save_native_draft_file(path: Path, caption: str, chat_id: str) -> dict:
+    if not path.is_file() or not 0 < path.stat().st_size <= 10 * 1024 * 1024:
+        raise ValueError("Choose one nonempty attachment up to 10 MiB")
+    client = MCPDraftClient()
+    try:
+        result = client.call("save_draft", {
+            "chat_id": chat_id, "text": caption, "file_name": path.name,
+            "file_base64": base64.b64encode(path.read_bytes()).decode("ascii"),
+        })
+        attachments = result.get("attachments", [])
+        if (result.get("saved") is not True or result.get("sent") is not False
+                or result.get("chat_id") != chat_id or result.get("text") != caption
+                or len(attachments) != 1 or not attachments[0].get("telegram_file_id")):
+            raise ValueError("Telegram did not confirm this native draft and attachment")
+        return result
+    finally:
+        client.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -164,6 +183,10 @@ def main():
     save.add_argument("--caption-file", required=True, type=Path)
     save.add_argument("--receipt", required=True, type=Path)
     read = commands.add_parser("read")
+    native = commands.add_parser("native", help="Save the file in the native Telegram draft")
+    native.add_argument("--chat-id", required=True, type=UUID)
+    native.add_argument("--file", required=True, type=Path)
+    native.add_argument("--caption-file", required=True, type=Path)
     read.add_argument("--id", required=True, type=UUID)
     send = commands.add_parser(
         "send", help="Send only after the user explicitly approves this draft"
@@ -172,7 +195,11 @@ def main():
     send.add_argument("--approve", required=True, action="store_true")
     args = parser.parse_args()
     try:
-        if args.command == "save":
+        if args.command == "native":
+            result = save_native_draft_file(
+                args.file.expanduser(), args.caption_file.expanduser().read_text(), str(args.chat_id)
+            )
+        elif args.command == "save":
             result = save_draft_file(
                 args.file.expanduser(),
                 args.caption_file.expanduser().read_text().strip(),

@@ -2804,15 +2804,15 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "telethon"
-version = "1.44.0"
+version = "1.46.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyaes" },
     { name = "rsa" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/49/e2/d4137e598db0ba50e4cf9bf32f2e26d016b2c4bb0e9763e3d5a07007d780/telethon-1.44.0.tar.gz", hash = "sha256:7de1473e9e412e20bd57b102d8f50d48372712462be9ff6c003bb81c50ad7e98", size = 701463, upload-time = "2026-06-15T15:47:39.44Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/e9/b0a7b4af3ad1302845cce64e62cfd9040d6ae2d8b49c391a51dddc347eea/telethon-1.46.0.tar.gz", hash = "sha256:8357f5719376a9c1ddf0999136a44594a5b21b453647f1e146c169483b6a67df", size = 766624, upload-time = "2026-11-17T19:46:48.924Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/82/fd/4ad621d7a4b8655dfc964ee1c1267407496ec6fd10c91901a64ea29c16c8/telethon-1.44.0-py3-none-any.whl", hash = "sha256:52fc49efb67a4916c2aedcb295ad286f4afa2aba9bf15d83ed2acdc64af0c718", size = 789786, upload-time = "2026-06-15T15:47:41.534Z" },
+    { url = "https://files.pythonhosted.org/packages/82/33/30d84b58c52231ae6b3e6b918cee4a8a040338eef814e4e57217e849f18a/telethon-1.46.0-py3-none-any.whl", hash = "sha256:c56e55e4a1f95fde556fe13459a542fc758e8ba501c0bf76f2fc5d8409fa81cb", size = 836173, upload-time = "2026-11-17T19:46:46.848Z" },
 ]
 
 [[package]]
@@ -3216,7 +3216,7 @@ requires-dist = [
     { name = "sentry-sdk", extras = ["fastapi"], specifier = ">=2.0.0" },
     { name = "slowapi", specifier = ">=0.1.9" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
-    { name = "telethon", specifier = "==1.44.0" },
+    { name = "telethon", specifier = "==1.46.0" },
     { name = "tiktoken", specifier = ">=0.12,<1" },
     { name = "time-machine", marker = "extra == 'dev'", specifier = ">=2.16.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },

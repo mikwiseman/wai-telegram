@@ -14,7 +14,7 @@ dependencies = [
     "PyJWT==2.13.0",  # Replaced python-jose (CVE-2024-33663, CVE-2025-61152)
     "pwdlib[argon2,bcrypt]==0.3.0",
     "cryptography==50.0.0",
-    "telethon==1.44.0",
+    "telethon==1.46.0",
     "cryptg==0.6.0",
     "celery[redis]==5.6.3",
     "redis>=5.2.0",

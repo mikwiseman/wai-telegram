@@ -2,7 +2,7 @@
 
 Пять скиллов для повседневной работы с Telegram в Codex и Claude.
 
-Текстовые черновики сохраняются в Telegram через `save_draft`. Полный черновик с документом или фото хранится в WAI: `save_file_draft`, `get_file_draft` и `list_file_drafts` сохраняют и читают текст вместе с оригинальным файлом без отправки. Для локальных файлов есть `skills/telegram-drafts/scripts/save_draft_file.py`. Telegram не синхронизирует вложения в своём поле черновика; не называйте файл в WAI вложением в приложении Telegram.
+В Telegram через `save_draft` можно сохранить текст с PDF, другим документом или фото. Локальные файлы до 10 MiB прикрепляет `skills/telegram-drafts/scripts/save_draft_file.py native`. Чтобы проверить текст и вложения, вызови `list_drafts`.
 
 | Скилл | Примеры |
 |---|---|
