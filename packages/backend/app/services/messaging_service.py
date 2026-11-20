@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import binascii
 import hashlib
 import ipaddress
 import logging
@@ -11,6 +13,8 @@ from urllib.parse import urljoin, urlparse
 from uuid import UUID
 
 import httpx
+from telethon import functions, types
+from telethon.extensions import markdown
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from telethon.errors import (
@@ -34,6 +38,11 @@ from telethon.utils import get_peer_id
 from app.core.config import get_settings
 from app.models.chat import ChatType, TelegramChat
 from app.services.telegram_client import get_client
+from app.services.telegram_rich_drafts import (
+    read_peer_draft,
+    rich_draft_content,
+    save_with_attachment,
+)
 from app.services.telegram_client import (
     SESSION_EXPIRED_MESSAGE,
     TelegramSessionUnauthorizedError,
@@ -46,6 +55,23 @@ logger = logging.getLogger(__name__)
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _MAX_DOWNLOAD_REDIRECTS = 5
 SendTarget = UUID | Literal["me"]
+MAX_DRAFT_FILE_BYTES = 10 * 1024 * 1024
+
+
+class DraftFileTooLarge(ValueError):
+    pass
+
+
+def decode_draft_file(encoded: str) -> bytes:
+    if len(encoded) > ((MAX_DRAFT_FILE_BYTES + 2) // 3) * 4:
+        raise DraftFileTooLarge("Draft attachment exceeds 10 MiB")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        raise ValueError("file_base64 must contain valid base64") from None
+    if len(data) > MAX_DRAFT_FILE_BYTES:
+        raise DraftFileTooLarge("Draft attachment exceeds 10 MiB")
+    return data
 
 
 class TelegramEntityNotFoundError(ValueError):
@@ -280,25 +306,54 @@ async def save_draft(
     user_id: UUID,
     chat_id: UUID,
     text: str,
+    *,
+    file_name: str | None = None,
+    file_base64: str | None = None,
+    file_url: str | None = None,
 ) -> dict:
     """Save a server-synced Telegram draft without sending a message."""
-    if not isinstance(text, str) or not text.strip():
+    has_attachment = any(
+        value is not None for value in (file_name, file_base64, file_url)
+    )
+    if has_attachment and (
+        not file_name or (file_base64 is None) == (file_url is None)
+    ):
+        raise ValueError(
+            "Draft attachments require file_name and exactly one of file_url or file_base64"
+        )
+    if not isinstance(text, str) or (not has_attachment and not text.strip()):
         raise ValueError("Draft text must not be empty")
 
     chat = await _get_chat(db, user_id, chat_id)
     client = await get_client(user_id, db)
     try:
         entity = await _resolve_chat_entity(client, db, chat)
-        saved = await client(SaveDraftRequest(peer=entity, message=text))
-        if not saved:
-            raise ValueError("Telegram did not confirm that the draft was saved")
-        return {
+        result = {
             "chat_id": str(chat_id),
             "text": text,
             "saved": True,
             "sent": False,
             "replaces_existing_draft": True,
         }
+        if has_attachment:
+            previous = await read_peer_draft(client, entity)
+            with _outbound_directory() as directory:
+                path = Path(directory) / _sanitize_file_name(file_name)
+                if file_url is not None:
+                    await _download_url_to_path(
+                        file_url, path, max_bytes=MAX_DRAFT_FILE_BYTES
+                    )
+                else:
+                    path.write_bytes(decode_draft_file(file_base64))
+                if not path.stat().st_size:
+                    raise ValueError("Draft attachment must not be empty")
+                attachment = await save_with_attachment(
+                    client, entity, text, path, previous
+                )
+            result["attachments"] = [attachment]
+        elif not await client(SaveDraftRequest(peer=entity, message=text)):
+            raise ValueError("Telegram did not confirm that the draft was saved")
+        return result
     except (
         FloodWaitError,
         ChatWriteForbiddenError,
@@ -313,12 +368,6 @@ async def save_draft(
         _handle_telethon_error(e)
     finally:
         await client.disconnect()
-
-
-DRAFT_MEDIA_UNSUPPORTED = (
-    "Telegram does not support photo or file attachments in server-synced drafts. "
-    "Use save_file_draft to keep text and attachment together in Wai without sending."
-)
 
 
 async def _download_url_to_path(
@@ -373,13 +422,26 @@ async def list_drafts(db: AsyncSession, user_id: UUID) -> dict:
 
     client = await get_client(user_id, db)
     try:
-        live_drafts = await client.get_drafts()
+        live_drafts = await client(functions.messages.GetAllDraftsRequest())
         drafts = []
-        for draft in live_drafts:
-            if draft.is_empty:
+        for update in live_drafts.updates:
+            if not isinstance(update, types.UpdateDraftMessage) or not isinstance(
+                update.draft, types.DraftMessage
+            ):
                 continue
-            peer_id = get_peer_id(draft.entity)
+            draft = update.draft
+            if not (
+                draft.message or draft.rich_message or draft.reply_to or draft.media
+            ):
+                continue
+            peer_id = get_peer_id(update.peer)
             chat = chats_by_peer_id.get(peer_id)
+            text = markdown.unparse(draft.message, draft.entities)
+            extra = {}
+            if draft.rich_message:
+                rich_text, attachments = rich_draft_content(draft.rich_message)
+                text = text or rich_text
+                extra = {"rich_message": True, "attachments": attachments}
             drafts.append(
                 {
                     "chat_id": str(chat.id) if chat else None,
@@ -387,10 +449,13 @@ async def list_drafts(db: AsyncSession, user_id: UUID) -> dict:
                     "chat_type": chat.chat_type.value if chat else None,
                     "title": chat.title if chat else None,
                     "username": chat.username if chat else None,
-                    "text": draft.text,
+                    "text": text,
                     "date": draft.date.isoformat() if draft.date else None,
-                    "reply_to_message_id": draft.reply_to_msg_id,
-                    "link_preview": draft.link_preview,
+                    "reply_to_message_id": getattr(
+                        draft.reply_to, "reply_to_msg_id", None
+                    ),
+                    "link_preview": not draft.no_webpage,
+                    **extra,
                 }
             )
         drafts.sort(key=lambda item: item["date"] or "", reverse=True)
@@ -421,8 +486,8 @@ async def clear_draft(
         cleared = await client(SaveDraftRequest(peer=entity, message=""))
         if not cleared:
             raise ValueError("Telegram did not confirm that the draft was cleared")
-        current = await client.get_drafts(entity)
-        if not current.is_empty:
+        current = await read_peer_draft(client, entity)
+        if isinstance(current, types.DraftMessage):
             raise ValueError("Telegram still reports a draft after clearing it")
         return {
             "chat_id": str(chat_id),

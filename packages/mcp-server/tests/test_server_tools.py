@@ -243,8 +243,24 @@ class TestCallTool:
                 },
             )
         assert result.isError is True
-        assert "attachments are not supported" in result.content[0].text
+        assert "attachments require file_name" in result.content[0].text
         mock_api.execute_data_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_native_file_uses_verified_backend_receipt(self):
+        mock_api = AsyncMock()
+        args = {"chat_id": "chat-123", "text": "", "file_name": "x.pdf", "file_base64": "JVBERg=="}
+        receipt = {"saved": True, "sent": False, "attachments": [{"kind": "document"}]}
+        mock_api.execute_data_tool.return_value = receipt
+        with patch("telegram_wai_mcp.server.get_client", return_value=mock_api):
+            result = await server.call_tool("save_draft", args)
+        mock_api.execute_data_tool.assert_awaited_once_with("save_draft", args)
+        assert result.structuredContent == receipt
+
+        mock_api.execute_data_tool.return_value = {"saved": True, "sent": False}
+        with patch("telegram_wai_mcp.server.get_client", return_value=mock_api):
+            result = await server.call_tool("save_draft", args)
+        assert result.isError
 
     @pytest.mark.asyncio
     async def test_refresh_chats_reports_fresh_unread_counts_without_reading(self):

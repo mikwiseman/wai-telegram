@@ -472,6 +472,7 @@ class TestDraftReconciliation:
         self, db_session, test_user
     ):
         from app.services.messaging_service import list_drafts
+        from telethon import types
         from tests.factories import TelegramChatFactory
 
         chat = TelegramChatFactory.create(
@@ -483,23 +484,23 @@ class TestDraftReconciliation:
         db_session.add(chat)
         await db_session.flush()
 
-        draft = SimpleNamespace(
-            is_empty=False,
-            entity=object(),
-            text="Current draft",
-            date=datetime.now(UTC),
-            reply_to_msg_id=42,
-            link_preview=False,
+        draft = types.DraftMessage(
+            "Current draft",
+            datetime.now(UTC),
+            no_webpage=True,
+            reply_to=types.InputReplyToMessage(42),
         )
-        mock_client = AsyncMock()
-        mock_client.get_drafts.return_value = [draft]
+        mock_client = AsyncMock(
+            return_value=SimpleNamespace(
+                updates=[types.UpdateDraftMessage(types.PeerUser(123456), draft)]
+            )
+        )
         mock_client.disconnect = AsyncMock()
 
         with (
             patch(
                 "app.services.messaging_service.get_client", return_value=mock_client
             ),
-            patch("app.services.messaging_service.get_peer_id", return_value=123456),
         ):
             result = await list_drafts(db_session, test_user.id)
 
@@ -522,7 +523,6 @@ class TestDraftReconciliation:
         await db_session.flush()
 
         mock_client = AsyncMock(return_value=True)
-        mock_client.get_drafts.return_value = SimpleNamespace(is_empty=True)
         mock_client.disconnect = AsyncMock()
         mock_client.send_message = AsyncMock()
         resolved_entity = object()
@@ -531,6 +531,11 @@ class TestDraftReconciliation:
             patch(
                 "app.services.messaging_service.get_client", return_value=mock_client
             ),
+            patch(
+                "app.services.messaging_service.read_peer_draft",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as readback,
             patch(
                 "app.services.messaging_service._resolve_chat_entity",
                 new_callable=AsyncMock,
@@ -549,7 +554,7 @@ class TestDraftReconciliation:
             "saved": True,
             "sent": False,
         }
-        mock_client.get_drafts.assert_awaited_once_with(resolved_entity)
+        readback.assert_awaited_once_with(mock_client, resolved_entity)
         mock_client.send_message.assert_not_awaited()
         mock_client.disconnect.assert_awaited_once()
 

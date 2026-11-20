@@ -28,9 +28,6 @@ from app.services.media_access import MEDIA_DOWNLOAD_TOKEN_TTL
 from app.services.messaging_service import clear_draft as clear_telegram_draft
 from app.services.messaging_service import list_drafts as list_telegram_drafts
 from app.services.messaging_service import save_draft as save_telegram_draft
-from app.services.messaging_service import (
-    DRAFT_MEDIA_UNSUPPORTED,
-)
 from app.services.file_browse_service import (
     DEFAULT_CONTEXT_WINDOW,
     DEFAULT_MEDIA_TYPES,
@@ -273,17 +270,25 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "list_drafts",
-        "List current Telegram drafts with live text, chat identity and date. Read-only; does not mark messages read.",
+        "List live Telegram drafts, including text, native rich editor attachments, chat identity and date. Does not mark messages read.",
         {"type": "object", "properties": {}},
     ),
     ToolDefinition(
         "save_draft",
-        "Save or replace a server-synced Telegram text draft in a chat. Photo and file attachments are not supported. This never sends a message and replaces any existing draft in that chat.",
+        "Save or replace a native Telegram draft without sending. For a file (up to 10 MiB), include "
+        "file_name and exactly one of file_base64 or file_url. JPEG and PNG appear inline. "
+        "The attachment and caption are read back from Telegram before success is returned.",
         {
             "type": "object",
             "properties": {
                 "chat_id": {"type": "string", "format": "uuid"},
-                "text": {"type": "string", "minLength": 1},
+                "text": {
+                    "type": "string",
+                    "description": "May be empty when attaching a file.",
+                },
+                "file_name": {"type": "string", "minLength": 1},
+                "file_base64": {"type": "string", "minLength": 1},
+                "file_url": {"type": "string", "format": "uri"},
             },
             "required": ["chat_id", "text"],
             "additionalProperties": False,
@@ -339,7 +344,7 @@ TOOL_DEFINITIONS = (
     ToolDefinition(
         "list_file_drafts",
         "List the owner's unsubmitted Wai text+file drafts, optionally for one chat. "
-        "These are distinct from Telegram's native text-only list_drafts. Never sends.",
+        "Use list_drafts to read native Telegram drafts. Never sends.",
         {
             "type": "object",
             "properties": {
@@ -1138,13 +1143,24 @@ async def _save_draft(
     db: AsyncSession, user_id: UUID, arguments: dict[str, Any]
 ) -> dict[str, Any]:
     chat_id = _required_uuid(arguments, "chat_id")
-    if "file_url" in arguments or "file_name" in arguments:
-        raise ToolInputError(DRAFT_MEDIA_UNSUPPORTED)
-    text = arguments.get("text", "")
-    if not isinstance(text, str) or not text.strip():
+    files = {
+        key: arguments[key]
+        for key in ("file_name", "file_url", "file_base64")
+        if key in arguments
+    }
+    if files and (
+        "file_name" not in files
+        or len(files) != 2
+        or not all(isinstance(v, str) and v.strip() for v in files.values())
+    ):
+        raise ToolInputError(
+            "Draft attachments require file_name and exactly one of file_url or file_base64"
+        )
+    text = arguments.get("text")
+    if not isinstance(text, str) or (not files and not text.strip()):
         raise ToolInputError("text must be a non-empty string")
     try:
-        return await save_telegram_draft(db, user_id, chat_id, text)
+        return await save_telegram_draft(db, user_id, chat_id, text, **files)
     except ValueError as exc:
         raise ToolInputError(str(exc)) from exc
 

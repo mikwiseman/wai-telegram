@@ -1,7 +1,5 @@
 """Store complete posts without Telegram side effects; publish only on a separate call."""
 
-import base64
-import binascii
 import hashlib
 import mimetypes
 from collections.abc import AsyncIterator
@@ -19,15 +17,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.models.post_draft import PostDraft
 from app.services.messaging_service import (
+    MAX_DRAFT_FILE_BYTES,
+    DraftFileTooLarge,
     _download_url_to_path,
     _get_chat,
     _outbound_directory,
     _sanitize_file_name,
     _send_file_path,
+    decode_draft_file,
 )
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
-MAX_FILE_BYTES = 10 * 1024 * 1024
+MAX_FILE_BYTES = MAX_DRAFT_FILE_BYTES
 DRAFT_DOWNLOAD_TTL = timedelta(minutes=15)
 
 
@@ -227,12 +228,12 @@ async def save_file_draft_from_base64(
     file_name: str,
     text: str,
 ) -> PostDraft:
-    if len(encoded) > ((MAX_FILE_BYTES + 2) // 3) * 4:
-        raise PostDraftError(413, "Draft attachment exceeds 10 MiB")
     try:
-        data = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError):
-        raise PostDraftError(400, "file_base64 must contain valid base64") from None
+        data = decode_draft_file(encoded)
+    except DraftFileTooLarge as exc:
+        raise PostDraftError(413, str(exc)) from None
+    except ValueError as exc:
+        raise PostDraftError(400, str(exc)) from None
 
     async def chunks():
         yield data

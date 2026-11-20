@@ -22,7 +22,6 @@ from app.services.messaging_service import (
     send_file,
     send_message,
     upload_to_saved_messages,
-    DRAFT_MEDIA_UNSUPPORTED,
 )
 
 router = APIRouter()
@@ -99,7 +98,10 @@ async def save_draft_file_endpoint(
     ctx: RequireDraft,
 ) -> None:
     """Reject obsolete upload clients before reading bytes or changing a draft."""
-    raise HTTPException(status_code=410, detail=DRAFT_MEDIA_UNSUPPORTED)
+    raise HTTPException(
+        status_code=410,
+        detail="For native draft attachments use save_draft with file_name and file_base64.",
+    )
 
 
 @router.post("/{chat_id}/reply", response_model=SendMessageResponse)
