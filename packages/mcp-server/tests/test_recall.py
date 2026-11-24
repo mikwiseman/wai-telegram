@@ -70,6 +70,7 @@ class FakeArchive:
     def __init__(self, chats, messages):
         self.chats = {chat["id"]: chat for chat in chats}
         self.messages = messages
+        self.api_key = f"key-{id(self)}"
         self.calls = []
         self.by_meaning = []  # ids a search by meaning returns whatever the words are
         self.broken = set()  # "exact", "hybrid", "get_files", "get_messages", "list_chats"
@@ -234,13 +235,16 @@ CHATS = [
 ]
 
 
-async def _inventory(api):
-    return await api.list_chats(limit=200)
+@pytest.fixture(autouse=True)
+def _no_chat_list_from_another_test():
+    recall_module._chat_lists.clear()
+    yield
+    recall_module._chat_lists.clear()
 
 
 async def _recall(api, question, **options):
     options.setdefault("today", TODAY)
-    return await recall(api, question=question, inventory=_inventory, **options)
+    return await recall(api, question=question, open_client=lambda: api, **options)
 
 
 def _fence_archive():
@@ -430,6 +434,42 @@ async def test_a_neighbour_from_another_day_is_not_part_of_the_exchange():
     ]
 
 
+async def test_what_was_sent_in_the_talk_a_search_found_is_read_with_it():
+    # The talk is months behind the page of the chat that is read, and only one
+    # message of it has the question's words: the screenshot and the link have none.
+    messages = [
+        _msg("c-marta", 1, "2026-09-10", "Нашла приложение для бронирования беседок у озера."),
+        _msg(
+            "c-marta",
+            2,
+            "2026-09-10T10:02:00Z",
+            None,
+            media_type="photo",
+            content_summary="Booking screen: gazebo 4, Saturday, paid.",
+        ),
+        _msg("c-marta", 3, "2026-09-10T10:03:00Z", "https://apps.apple.com/app/lakeside/id1"),
+        *(
+            _msg(
+                "c-marta", number, f"2026-10-01T{number // 60 % 24:02d}:{number % 60:02d}:00Z", "Ок"
+            )
+            for number in range(100, 700)
+        ),
+        *(
+            _msg("c-marta", number, f"2026-11-0{number - 700}", "Обнови приложение банка.")
+            for number in range(701, 704)
+        ),
+    ]
+    chats = [_chat("c-marta", "Марта Кораблёва", synced=5000), *CHATS[1:]]
+    api = FakeArchive(chats, messages)
+    result = await _recall(api, "что Марта присылала про приложение для бронирования", limit=3)
+    assert {item["id"] for item in result["evidence"]} == {
+        "m-c-marta-1",
+        "m-c-marta-2",
+        "m-c-marta-3",
+    }
+    assert result["searched"]["context"] is True
+
+
 async def test_a_question_with_no_subject_reads_the_named_chat_in_the_window():
     api = _fence_archive()
     result = await _recall(api, "что писала Марта в октябре")
@@ -447,10 +487,16 @@ async def test_the_window_limits_every_search():
     )
     assert {item["id"] for item in result["evidence"]} == {"m-c-dacha-22", "m-c-dacha-21"}
     searches = [arguments for name, arguments in api.calls if name == "search_messages"]
-    assert searches
-    for arguments in searches:
+    by_wording = [arguments for arguments in searches if arguments["mode"] == "exact"]
+    assert by_wording
+    for arguments in by_wording:
         assert arguments["date_from"] == "2026-09-01T00:00:00+00:00"
         assert arguments["date_to"] == "2026-09-30T23:59:59.999999+00:00"
+    # Over weeks the search by meaning is only quick unfiltered: what falls outside
+    # the window is dropped here instead.
+    assert [arguments for arguments in searches if arguments["mode"] == "hybrid"] == [
+        {"query": "что решили про забор", "mode": "hybrid", "limit": 15}
+    ]
 
 
 async def test_text_stays_inside_the_budget():
@@ -508,13 +554,46 @@ async def test_a_failed_part_is_marked_and_the_rest_is_returned():
 async def test_a_slow_part_is_cut_off_and_marked():
     api = _fence_archive()
     api.stuck = {"hybrid", "get_messages"}
-    with patch.object(recall_module, "PART_SECONDS", 0.05):
+    with (
+        patch.object(recall_module, "PART_SECONDS", 0.05),
+        patch.object(recall_module, "CONTEXT_SECONDS", 0.05),
+    ):
         result = await asyncio.wait_for(_recall(api, "что мы решили про забор"), timeout=2)
     assert result["searched"]["meaning"] == "failed"
     assert result["searched"]["context"] == "failed"
     assert [item["date"] for item in result["evidence"]][0] == "2026-10-05"
     # Without the neighbours the open call still starts at the message itself.
     assert result["evidence"][0]["open"]["args"]["chat_id"] == "c-marta"
+
+
+async def test_a_long_chat_read_until_time_runs_out_keeps_what_was_read():
+    class SlowAfterTheFirstPage(FakeArchive):
+        pages = 0
+
+        async def get_messages(self, chat_id, limit=50, before=None, after=None):
+            page = await super().get_messages(chat_id, limit, before, after)
+            if limit == recall_module.PAGE:
+                self.pages += 1
+                if self.pages > 1:
+                    await asyncio.sleep(30)
+                oldest = page["messages"][-1]
+                page["has_more"] = True
+                page["next_cursor"] = recall_module._cursor(
+                    oldest["sent_at"], oldest["telegram_message_id"], oldest["id"]
+                )
+            return page
+
+    messages = [
+        _msg("c-marta", number, f"2026-10-{number:02d}", f"Забор, день {number}.")
+        for number in range(1, 9)
+    ]
+    chats = [_chat("c-marta", "Марта Кораблёва", synced=5000), *CHATS[1:]]
+    api = SlowAfterTheFirstPage(chats, messages)
+    with patch.object(recall_module, "READ_SECONDS", 0.1):
+        result = await asyncio.wait_for(_recall(api, "что Марта писала про забор"), timeout=2)
+    assert result["searched"]["browse"] is True
+    assert len(result["evidence"]) == 8
+    assert "did not answer" not in result["note"]
 
 
 async def test_without_the_list_of_chats_the_archive_is_still_searched():
@@ -733,7 +812,10 @@ class TestTool:
 
     async def test_the_answer_is_json_and_structured_content(self):
         api = _fence_archive()
-        with patch.object(server, "get_client", return_value=api):
+        with (
+            patch.object(server, "get_client", return_value=api),
+            patch.object(server, "TelegramAIClient", lambda base_url, api_key: api),
+        ):
             result = await server.call_tool("recall", {"question": "что мы решили про забор"})
         assert isinstance(result, CallToolResult)
         assert result.isError is False

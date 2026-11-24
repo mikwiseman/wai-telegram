@@ -32,6 +32,13 @@ _STOP = frozenset(
     просто если чтобы потому все всех всем весь вся раз мол типа пожалуйста надо нужно можно
     именно
     вообще либо нибудь может быть мог могла могли хочу хотел хотела
+    короче значит кажется вроде наверное думаю помню помнишь знаешь смотри слушай давай теперь
+    пока сразу моему твоему называется несколько пару один одна одно одним одного одной одну
+    два две три нужен нужна нужны можешь можете сможешь смогу могу создай создать сделай сделать
+    составь составить напиши написать проверь проверить посмотреть поискать привет спасибо
+    течение поводу насчет относительно ходу человек человека иди него нее получается
+    познакомил познакомила переписывались переписывался переписываюсь переписываю списывался
+    списывались списался списалась
     найди найти найдите покажи показать напомни напомнить вспомни вспомнить скажи расскажи дай
     дать подскажи посмотри глянь поищи ищи узнай
     писал писала писали написал написала написали пишет пишут писать сказал сказала сказали
@@ -51,7 +58,8 @@ _STOP = frozenset(
     a an the and or but of in on at to for from with by about as is are was were be been do does
     did have has had i me my we us our you your he him his she her it its they them their this
     that these those what which who whom whose when where why how there here not no yes if so
-    any some all just also can could would should will please much many
+    any some all just also can could would should will please much many think maybe something
+    somewhere like want need make create check
     find show tell give get look search remind recall remember
     message messages chat chats group channel conversation telegram
     wrote write written said say says told sent send sends shared share mentioned mention
@@ -60,16 +68,18 @@ _STOP = frozenset(
     since until before after during
     """.split()
 )
+_CHAT_WORD = re.compile(r"чат\w{0,2}|групп\w{1,2}|канал\w{0,2}|chat|group|channel")
 # Words a chat title may hold that say nothing about which chat it is.
 _PLAIN_TITLE = _STOP | frozenset("чат группа канал команда общий рабочий team work general".split())
 
 # The kind of thing asked for. A pointer ("the file", "the link") says what to
 # look for and is not itself a word to search; the rest are also subject words.
+# Each kind has a shape recall can recognise in a message without the word for it.
 _HINTS: dict[str, tuple[re.Pattern[str], bool]] = {
     "file": (
         re.compile(
-            r"файл\w*|документ\w*|вложени\w*|pdf|пдф\w*|скан(?:ы|а|у|е|ом|ов)?|files?"
-            r"|documents?|attachments?|docx?|xlsx?"
+            r"файл\w*|документ\w*|док(?:и|ов|ам|ами|ах)|вложени\w*|pdf|пдф\w*"
+            r"|скан(?:ы|а|у|е|ом|ов)?|files?|documents?|docs|attachments?|docx?|xlsx?"
         ),
         True,
     ),
@@ -85,6 +95,8 @@ _HINTS: dict[str, tuple[re.Pattern[str], bool]] = {
         re.compile(r"голосов\w*|войс\w*|аудио\w*|кружок|кружоч\w*|voice\w*|audio\w*"),
         True,
     ),
+    "list": (re.compile(r"списо?к\w*|перечень|перечн\w*|lists?|checklists?"), False),
+    "app": (re.compile(r"приложени\w*|apps?"), False),
     "address": (re.compile(r"адрес\w*|address\w*|локаци\w*|геолокаци\w*|locations?"), False),
     "phone": (re.compile(r"телефон\w*|phones?|мобильн\w*"), False),
     "amount": (
@@ -136,21 +148,39 @@ _LATIN_SPELLINGS = (
 )
 
 
+# "столбов", "саженцев": an ending of ordinary words. A surname keeps it (Иванов is not Иван).
+_RU_WORD_ENDINGS = sorted([*_RU_ENDINGS, "ов", "ев"], key=len, reverse=True)
+
+
+def _without_ending(word: str, endings: list[str]) -> str:
+    for ending in endings:
+        if word.endswith(ending) and len(word) - len(ending) >= 3:
+            return word[: -len(ending)]
+    return word
+
+
+@lru_cache(maxsize=50000)
 def stem(word: str) -> str:
     """A folded word without its Russian case ending or its English plural."""
     if _CYRILLIC.search(word):
-        for ending in _RU_ENDINGS:
-            if word.endswith(ending) and len(word) - len(ending) >= 3:
-                return word[: -len(ending)]
-        return word
+        return _without_ending(word, _RU_WORD_ENDINGS)
     return word[:-1] if len(word) > 3 and word.endswith("s") else word
+
+
+def same_word(a: str, b: str) -> bool:
+    """Two stems of one word family: equal, or one grows out of the other ("созвон", "созвониться")."""
+    if a == b:
+        return True
+    short, long = sorted((a, b), key=len)
+    return len(short) >= 5 and long.startswith(short)
 
 
 @lru_cache(maxsize=20000)
 def name_key(word: str) -> str:
     """One spelling for a folded name however it was typed, heard or declined."""
     if _CYRILLIC.search(word):
-        key = "".join(_TO_LATIN.get(letter, letter) for letter in stem(word))
+        bare_name = _without_ending(word, _RU_ENDINGS)
+        key = "".join(_TO_LATIN.get(letter, letter) for letter in bare_name)
     else:
         key = word
         for spelling, plain in _LATIN_SPELLINGS:
@@ -210,7 +240,10 @@ class _Match:
 
 
 def _chat_match(
-    chat: dict[str, Any], asked: dict[int, str], pairs: dict[tuple[int, int], str]
+    chat: dict[str, Any],
+    asked: dict[int, str],
+    pairs: dict[tuple[int, int], str],
+    as_names: set[int],
 ) -> _Match | None:
     title = words(str(chat.get("title") or ""))
     telling = [word for word in title if word not in _PLAIN_TITLE and not word.isdigit()]
@@ -218,21 +251,32 @@ def _chat_match(
     surely = 0
     naming: set[int] = set()
     distinctive = False
-    for known in telling:
+    person = is_person(chat)
+    for place, known in enumerate(telling):
         best, by = 0, ()
         for index, word in asked.items():
             quality = same_name(word, known)
+            # Among thousands of contacts some surname is one letter away from any
+            # everyday word, and some long title holds the word itself. A word not
+            # written as a name gets no slack, and names a person only by the name
+            # proper: the first two words of the title.
+            if index not in as_names and (quality == 1 or (person and place > 1)):
+                continue
             if quality > best:
                 best, by = quality, (index,)
-        if best < 2 and len(known) >= 6:
+        if best < 2 and len(known) >= 5:
             # A name heard as two words: "норд винд" for a chat titled NordWind.
             for pair, joined in pairs.items():
                 quality = same_name(joined, known)
+                if quality == 1 and not as_names.issuperset(pair):
+                    continue
                 if quality > best:
                     best, by = quality, pair
         if best:
-            found += 1
-            surely += best
+            # Two words of the question count as two, whether they name two title
+            # words ("Норд Винд") or one ("NordWind").
+            found += len(by)
+            surely += best * len(by)
             naming.update(by)
             distinctive = distinctive or len(known) >= 3
     username = fold(str(chat.get("username") or "")).removeprefix("@")
@@ -242,22 +286,34 @@ def _chat_match(
     # A person is named by one word of the name; a group, a channel or a bot by
     # two, when its title has them: their titles are made of everyday words.
     full_words = sum(1 for word in telling if len(word) >= 3)
-    needed = 1 if is_person(chat) else min(full_words, 2)
-    if not distinctive or found < needed:
+    needed = 1 if person else min(full_words, 2)
+    # Two words of the title, by two words of the question: one word that
+    # resembles two title words ("Сосновка", "Sosnovka") is still one word.
+    if not distinctive or found < needed or len(naming) < needed:
         return None
     return _Match(chat, (found, surely), frozenset(naming))
 
 
 def _match_who(
-    chats: list[dict[str, Any]], asked: dict[int, str]
+    chats: list[dict[str, Any]], asked: dict[int, str], as_names: set[int]
 ) -> tuple[list[dict[str, Any]], set[int]]:
-    """The chats and people the question names, and the question words that named them."""
+    """The chats and people the question names, and the question words that named them.
+
+    as_names are the question words written as names, with a capital letter
+    inside a sentence. A chat with no message in the archive cannot be named:
+    it is a contact, and there is nothing in it to find.
+    """
     if not asked:
         return [], set()
     pairs = {
         (index, index + 1): asked[index] + asked[index + 1] for index in asked if index + 1 in asked
     }
-    matches = [match for chat in chats if (match := _chat_match(chat, asked, pairs))]
+    matches = [
+        match
+        for chat in chats
+        if chat.get("total_messages_synced", 1)
+        and (match := _chat_match(chat, asked, pairs, as_names))
+    ]
     matches.sort(
         key=lambda match: (match.score, str(match.chat.get("last_activity_at") or "")),
         reverse=True,
@@ -390,9 +446,24 @@ def _one_month(today: date, d1: str, d2: str, month: str, year: str | None) -> _
     return end.replace(day=int(d1)), end
 
 
-def _one_day(today: date, preposition, day: str, month: str, year: str | None) -> _Window | None:
+@dataclass(frozen=True)
+class _SubjectDate:
+    """A day the question is about ("ярмарка 13 декабря"), not when it was written."""
+
+    phrase: str
+
+
+def _one_day(
+    today: date, preposition, day: str, month: str, year: str | None
+) -> _Window | _SubjectDate | None:
     found = _on(today, int(day), _month(month), _year(year))
-    return _open_ended(preposition, found, found) if found else None
+    if found is None:
+        return None
+    if not year and date(today.year, found.month, found.day) > today:
+        # Nothing was written on a day that has not come: it is what the messages
+        # are about, and they will name it the same way.
+        return _SubjectDate(f"{int(day)} {month}")
+    return _open_ended(preposition, found, found)
 
 
 def _written_dates(today: date, m: re.Match[str]) -> _Window | None:
@@ -451,6 +522,13 @@ def _season(today: date, name: str) -> _Window:
 def _this_week(today: date, weeks_back: int) -> _Window:
     monday = today - timedelta(days=today.weekday() + 7 * weeks_back)
     return monday, today if weeks_back == 0 else monday + timedelta(days=6)
+
+
+def _misheard_week(today: date, which: str, word: str) -> _Window | None:
+    """Dictation writes "на прошлой нидели"; two letters off is still the week."""
+    if min(_distance(word, "неделе"), _distance(word, "неделю")) > 2:
+        return None
+    return _this_week(today, 1 if which == "прошл" else 0)
 
 
 def _last_month(today: date) -> _Window:
@@ -516,6 +594,7 @@ _RULES: tuple[_Rule, ...] = (
         r"\b(?:на|за|в)\s+(?:прошлой|прошлую|предыдущ\w+)\s+недел[еюи]\b|\b(?:last|previous) week\b",
         lambda today: _this_week(today, 1),
     ),
+    _rule(r"\b(?:на|за|в)\s+(прошл|эт)\w+\s+(\w{5,8})\b", _misheard_week),
     _rule(
         r"\b(?:в|за)\s+(?:этом|этот)\s+месяц[еа]?\b|\bthis month\b",
         lambda today: (today.replace(day=1), today),
@@ -540,8 +619,10 @@ _RULES: tuple[_Rule, ...] = (
         r"\b(\d+)\s+(?:дн\w+|день|days?)\s+(?:назад|ago)\b",
         lambda today, count: (today - timedelta(int(count)),) * 2,
     ),
+    # A weekday written with its date ("в понедельник, 9 ноября") is that date.
     _rule(
-        rf"\b(?:в|во|on|(last))\s+(?:(прошл)\w+\s+)?({'|'.join(_WEEKDAYS)})\b",
+        rf"\b(?:в|во|on|(last))\s+(?:(прошл)\w+\s+)?({'|'.join(_WEEKDAYS)})\b"
+        rf"(?!,?\s+(?:\d{{1,2}}\S*\s+(?:{_ANY})|(?:{_ANY})\s+\d+)\b)",
         lambda today, last, past, name: _weekday(today, last or past, name),
     ),
     _rule(r"\b(?:(?:этой|прошлой)\s+)?(весной|летом|осенью|зимой)\b", _season),
@@ -549,17 +630,90 @@ _RULES: tuple[_Rule, ...] = (
 )
 
 
-def parse_window(text: str, today: date) -> tuple[date | None, date | None, tuple[int, int] | None]:
-    """The time window a folded question names, and where in the text it says so."""
+_SPOKEN_DAYS = {
+    "перв": 1,
+    "втор": 2,
+    "трет": 3,
+    "четверт": 4,
+    "пят": 5,
+    "шест": 6,
+    "седьм": 7,
+    "восьм": 8,
+    "девят": 9,
+    "десят": 10,
+    "одиннадцат": 11,
+    "двенадцат": 12,
+    "тринадцат": 13,
+    "четырнадцат": 14,
+    "пятнадцат": 15,
+    "шестнадцат": 16,
+    "семнадцат": 17,
+    "восемнадцат": 18,
+    "девятнадцат": 19,
+    "двадцат": 20,
+    "тридцат": 30,
+}
+_SPOKEN_DAY = re.compile(
+    rf"\b(?:(двадцать|тридцать)\s+)?({'|'.join(_SPOKEN_DAYS)})(?:ого|ое|ому|ым|ьего|ье|ьему|ьим)"
+    rf"(?=\s+(?:{_RU})\b)",
+    re.IGNORECASE,
+)
+
+
+def days_in_figures(text: str) -> str:
+    """Dictation spells a day out ("тринадцатого ноября"); messages write "13 ноября"."""
+
+    def figures(m: re.Match[str]) -> str:
+        tens = {"двадцать": 20, "тридцать": 30}.get((m.group(1) or "").lower(), 0)
+        return str(tens + _SPOKEN_DAYS[m.group(2).lower()])
+
+    return _SPOKEN_DAY.sub(figures, text)
+
+
+@dataclass(frozen=True)
+class Window:
+    since: date | None
+    until: date | None
+    spans: tuple[tuple[int, int], ...]  # where the text speaks of dates
+    phrases: tuple[str, ...]  # days the question is about, as a message would write them
+
+
+def parse_window(text: str, today: date) -> Window:
+    """The time window a folded question names, and the days it only talks about."""
+    spans: list[tuple[int, int]] = []
+    phrases: list[str] = []
     for pattern, read in _RULES:
         for m in pattern.finditer(text):
+            if any(start < m.end() and m.start() < end for start, end in spans):
+                continue
             try:
-                window = read(today, m)
+                found = read(today, m)
             except (ValueError, OverflowError):  # "100000000 дней назад"
                 continue
-            if window:
-                return window[0], window[1], m.span()
-    return None, None, None
+            if isinstance(found, _SubjectDate):
+                spans.append(m.span())
+                phrases.append(found.phrase)
+            elif found:
+                return Window(found[0], found[1], (*spans, m.span()), tuple(phrases))
+    return Window(None, None, tuple(spans), tuple(phrases))
+
+
+_SENDING = r"(?:отправ|пис|напис|скид|скин|присл|присыл|кид|кин|пересл|пересыл)\w*"
+_FROM_ME = re.compile(
+    rf"\bя\s+(?:\w+\s+){{0,3}}?{_SENDING}|\b{_SENDING}\s+я\b|\bя\s+(?:ей|ему|им)\b"
+    r"|\bi\s+(?:\w+\s+)?(?:sent|wrote|shared|forwarded|texted)\b"
+)
+_TO_ME = re.compile(
+    rf"\b(?:он|она|они|мне)\s+(?:\w+\s+){{0,2}}?{_SENDING}|\b{_SENDING}\s+мне\b"
+    r"|\b(?:he|she|they)\s+(?:\w+\s+)?(?:sent|wrote|shared|texted)\b"
+    r"|\b(?:sent|wrote|texted)\s+me\b"
+)
+
+
+def _direction(text: str) -> str | None:
+    """Whose messages are asked for: "out" for mine, "in" for theirs, None when unsure."""
+    mine, theirs = bool(_FROM_ME.search(text)), bool(_TO_ME.search(text))
+    return None if mine == theirs else "out" if mine else "in"
 
 
 # --- the whole question --------------------------------------------------------
@@ -571,9 +725,21 @@ class Understood:
     until: date | None
     who: list[dict[str, Any]]  # the chats named, as the archive lists them
     about: list[str]  # the subject, in the question's own words
-    terms: list[str]  # the words of the subject worth searching for
-    phrase: str | None  # words to find exactly as written, side by side
-    hints: frozenset[str]  # file, photo, link, voice, address, phone, amount
+    terms: list[str]  # the words of the subject worth searching for, one per word family
+    phrases: list[str]  # words to find exactly as written, side by side
+    quoted: bool  # the first phrase is a quotation, the person's own exact words
+    hints: frozenset[str]  # file, photo, link, voice, list, app, address, phone, amount
+    direction: str | None  # "out": what I sent; "in": what was sent to me
+    asked: str  # the part of the question that says what to find
+
+
+_BOT_HANDLE = re.compile(r"@\w*bot\b", re.IGNORECASE)
+# A request to make something: "напиши", "составь ему", "создай встречу".
+_MAKING = re.compile(
+    r"\b(?:напиши|составь|создай|сделай|подготовь|отправь|ответь|набросай)(?:те)?\b"
+    r"|\b(?:draft|compose|create|schedule)\b",
+    re.IGNORECASE,
+)
 
 
 def understand(
@@ -584,22 +750,43 @@ def understand(
     since: date | None = None,
     until: date | None = None,
 ) -> Understood:
-    text = question.lower()
-    folded = text.replace("ё", "е")
+    """What the question asks to find.
+
+    A question often goes on to ask for something to be made: "найди, что Марта
+    писала про забор, и напиши ей, что приеду в пятницу". What follows that
+    request describes the thing to make, its words and its dates, not what to
+    find; so when the part before it already says what to look for, only that
+    part is read.
+    """
+    # A bot's handle addresses the assistant asked, not someone the question is about.
+    question = _BOT_HANDLE.sub(lambda m: " " * len(m.group()), question)
+    making = next((m for m in _MAKING.finditer(question) if question[: m.start()].strip()), None)
+    if making:
+        lookup = _understand(question[: making.start()], chats, today, since, until)
+        if lookup.terms or lookup.phrases:
+            return lookup
+    return _understand(question, chats, today, since, until)
+
+
+def _understand(
+    question: str,
+    chats: list[dict[str, Any]],
+    today: date,
+    since: date | None,
+    until: date | None,
+) -> Understood:
+    # Same length and places as the lower-case text, with the capitals kept.
+    cased = days_in_figures(question.replace("ё", "е").replace("Ё", "Е"))
+    text = cased.lower()
     quoted = _QUOTED.search(text)
     # Words inside quotes are a quotation, not a date to work out.
     dated = (
-        folded
+        text
         if not quoted
-        else (
-            folded[: quoted.start()]
-            + " " * (quoted.end() - quoted.start())
-            + folded[quoted.end() :]
-        )
+        else (text[: quoted.start()] + " " * (quoted.end() - quoted.start()) + text[quoted.end() :])
     )
-    said_since, said_until, span = parse_window(dated, today)
-    if since or until:
-        said_since, said_until = since, until
+    window = parse_window(dated, today)
+    said_since, said_until = (since, until) if since or until else (window.since, window.until)
 
     tokens = list(_WORD.finditer(text))
     hints: set[str] = set()
@@ -607,9 +794,9 @@ def understand(
     asked: dict[int, str] = {}
     subject: list[int] = []
     for index, word in enumerate(tokens):
-        if span and span[0] <= word.start() < span[1]:
+        if any(start <= word.start() < end for start, end in window.spans):
             continue
-        key = fold(word.group())
+        key = word.group()
         kinds = [(name, only) for name, (pattern, only) in _HINTS.items() if pattern.fullmatch(key)]
         hints.update(name for name, _ in kinds)
         if any(only for _, only in kinds):
@@ -621,14 +808,31 @@ def understand(
         if len(key) >= 3:
             subject.append(index)
 
-    who, named = _match_who(chats, asked)
+    # Dictation and people write a name with a capital; the first word of a
+    # sentence has one whatever it is. And what follows "в чате" is a chat's name.
+    as_names = {
+        index
+        for index in asked
+        if cased[tokens[index].start()].isupper()
+        and cased[: tokens[index].start()].rstrip(' \t«"“„(')[-1:]
+        not in ("", ".", "!", "?", "…", "\n")
+    }
+    for index, word in enumerate(tokens):
+        if _CHAT_WORD.fullmatch(word.group()):
+            as_names.update(range(index + 1, index + 4))
+    who, named = _match_who(chats, asked, as_names)
     subject = [index for index in subject if index not in named]
     about = list(dict.fromkeys(tokens[index].group() for index in subject))
     term_words = [index for index in subject if index not in pointers]
-    terms = list(dict.fromkeys(tokens[index].group() for index in term_words))
+    families: dict[str, str] = {}
+    for index in term_words:
+        family = stem(tokens[index].group())
+        if not any(same_word(family, known) for known in families):
+            families[family] = tokens[index].group()
+    terms = list(families.values())
 
-    phrase = quoted.group(1).strip() if quoted else None
-    if not phrase:
+    phrases = [quoted.group(1).strip()] if quoted else []
+    if not phrases:
         run: list[int] = []
         best: list[int] = []
         for index in term_words:
@@ -641,7 +845,7 @@ def understand(
             if len(run) > len(best):
                 best = run
         if 2 <= len(best) <= 6:
-            phrase = text[tokens[best[0]].start() : tokens[best[-1]].end()]
+            phrases.append(text[tokens[best[0]].start() : tokens[best[-1]].end()])
 
     return Understood(
         since=said_since,
@@ -649,6 +853,9 @@ def understand(
         who=who,
         about=about,
         terms=terms,
-        phrase=phrase,
+        phrases=[*phrases, *window.phrases],
+        quoted=bool(quoted),
         hints=frozenset(hints),
+        direction=_direction(text),
+        asked=question,
     )

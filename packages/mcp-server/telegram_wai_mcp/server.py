@@ -1413,13 +1413,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent] |
             until = _optional_iso_date(args, "until")
             if since and until and since > until:
                 raise ValueError('"since" must not be after "until"')
+            base_url, api_key = api.base_url, api.api_key
             result = await recall(
                 api,
                 question=question,
                 limit=limit,
                 since=since,
                 until=until,
-                inventory=_list_all_chats,
+                # recall keeps the list of chats per key and loads it behind the calls.
+                open_client=lambda: TelegramAIClient(base_url=base_url, api_key=api_key),
             )
             return CallToolResult(
                 content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False))],

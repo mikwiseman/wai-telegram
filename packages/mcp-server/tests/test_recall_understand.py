@@ -56,7 +56,11 @@ def _who(question, chats=CHATS):
         ("что было с 28 октября по 3 ноября", "2026-10-28", "2026-11-03"),
         ("what was said from October 12 to 18", "2026-10-12", "2026-10-18"),
         ("что было 3 ноября", "2026-11-03", "2026-11-03"),
-        ("что было 30 ноября", "2025-11-30", "2025-11-30"),
+        ("что было 30 ноября 2025", "2025-11-30", "2025-11-30"),
+        ("что было третьего ноября", "2026-11-03", "2026-11-03"),
+        ("что было двадцать первого октября", "2026-10-21", "2026-10-21"),
+        ("что прислали на прошлой нидели", "2026-11-16", "2026-11-22"),
+        ("что обсуждали на прошлой встрече", None, None),
         ("what was sent on Oct 5th, 2026", "2026-10-05", "2026-10-05"),
         ("что прислали 2026-10-05", "2026-10-05", "2026-10-05"),
         ("счёт от 05.10.2026", "2026-10-05", "2026-10-05"),
@@ -69,6 +73,10 @@ def _who(question, chats=CHATS):
         ("что писали с октября", "2026-10-01", None),
         ("what happened since October", "2026-10-01", None),
         ("что обсуждали в пятницу", "2026-11-20", "2026-11-20"),
+        # A weekday written with its date is that date, here one still ahead.
+        ("про встречу в понедельник, 30 ноября", None, None),
+        ("the call on Monday, November 30", None, None),
+        ("что было в понедельник, 16 ноября", "2026-11-16", "2026-11-16"),
         ("что было в 2025 году", "2025-01-01", "2025-12-31"),
         ("что мы решили про забор", None, None),
         ("this may be about the fence", None, None),
@@ -101,7 +109,15 @@ def test_explicit_dates_override_the_question():
 def test_a_date_is_not_a_search_word_and_an_impossible_date_is_not_a_date():
     assert understand("что писали 12 октября про забор", [], today=TODAY).about == ["забор"]
     for question in ("что было 31 февраля", "что было 100000000 дней назад"):
-        assert parse_window(question, TODAY) == (None, None, None)
+        window = parse_window(question, TODAY)
+        assert (window.since, window.until, window.spans) == (None, None, ())
+
+
+def test_a_day_still_ahead_is_what_the_messages_are_about():
+    understood = understand("рассада к ярмарке тринадцатого декабря", [], today=TODAY)
+    assert (understood.since, understood.until) == (None, None)
+    assert understood.phrases == ["13 декабря"]
+    assert understood.about == ["рассада", "ярмарке"]
 
 
 def test_a_person_called_like_a_month_is_a_person():
@@ -130,15 +146,51 @@ def test_russian_case_endings_and_latin_spelling_find_the_person(question):
     [
         ("что прислал Timur", "c-timur"),
         ("напомни что писала Илона", "c-ilona"),
-        ("что сказал тимор", "c-timur"),  # dictation heard one letter wrong
+        ("что сказал Тимор", "c-timur"),  # dictation heard one letter wrong
         ("что написал Тимур Сойкен", "c-timur"),
         ("what did Elona Brant say", "c-ilona"),
         ("что нового в orionbooks", "c-orion"),
-        ("что писали в орион бук клаб", "c-orion"),
+        ("что писали в чате орион бук клаб", "c-orion"),
     ],
 )
 def test_transliteration_and_dictation_slips_still_find_the_chat(question, chat_id):
     assert _who(question) == [chat_id]
+
+
+def test_slack_in_spelling_is_only_for_words_written_as_names():
+    chats = [_chat("c-zabolin", "Пётр Заболин"), _chat("c-timur", "Тимур Сойкин")]
+    # "забором" is one letter from a surname; so is "Тимор" from a first name.
+    assert _who("что решили с забором", chats) == []
+    assert _who("Что решили с Тимором", chats) == ["c-timur"]
+    assert _who("Тимор писал про забор", chats) == []  # a capital that only opens the sentence
+    assert _who("что решили в чате тимор", chats) == ["c-timur"]  # a chat's name follows
+
+
+def test_an_everyday_word_deep_in_a_long_title_names_nobody():
+    chats = [_chat("c-coach", "Ида Вольская | стратегия и рост бизнеса")]
+    understood = understand("приложение про бизнес-ланчи", chats, today=TODAY)
+    assert understood.who == []
+    assert understood.terms == ["приложение", "бизнес", "ланчи"]
+    assert _who("что писала ида про бизнес", chats) == ["c-coach"]
+
+
+def test_word_forms_are_one_family():
+    understood = understand("сколько саженцев и столбов, какие саженцы и столбы", [], today=TODAY)
+    assert understood.terms == ["саженцев", "столбов"]
+
+
+def test_a_contact_with_no_messages_cannot_be_named():
+    chats = [
+        {**_chat("c-empty", "Марта Иволгина"), "total_messages_synced": 0},
+        _chat("c-marta", "Марта Кораблёва"),
+    ]
+    assert _who("что писала Марта", chats) == ["c-marta"]
+
+
+def test_one_word_cannot_stand_for_two_words_of_a_group_title():
+    chats = [_chat("c-club", "Сосновка Sosnovka клуб", "group")]
+    assert _who("что там в сосновке", chats) == []
+    assert _who("что там в клубе сосновка", chats) == ["c-club"]
 
 
 def test_a_bot_is_named_like_a_group_not_like_a_person():
@@ -187,6 +239,7 @@ def test_a_full_name_picks_one_person_and_a_first_name_keeps_both():
     ("question", "hints"),
     [
         ("найди файл со сметой", {"file"}),
+        ("какие доки актуальные по забору", {"file"}),
         ("where is the PDF with the estimate", {"file"}),
         ("фото забора от Тимура", {"photo"}),
         ("пришли ссылку на таблицу", {"link"}),
@@ -195,6 +248,9 @@ def test_a_full_name_picks_one_person_and_a_first_name_keeps_both():
         ("найди сообщение, где Марта прислала адрес", {"address"}),
         ("номер телефона сантехника", {"phone"}),
         ("сколько стоит забор", {"amount"}),
+        ("найди список документов от Марты", {"list", "file"}),
+        ("приложение для бронирования беседок", {"app"}),
+        ("с кем я списывался вчера", set()),
         ("what was the price of the fence", {"amount"}),
         ("что мы решили про забор", set()),
     ],
@@ -210,10 +266,65 @@ def test_about_keeps_the_subject_and_drops_names_dates_and_small_words():
     assert understood.about == ["договор", "аренды", "ссылку", "смету"]
     # "ссылку" says what kind of thing to look for; it is not a word to search for.
     assert understood.terms == ["договор", "аренды", "смету"]
-    assert understood.phrase == "договор аренды"
+    assert understood.phrases == ["договор аренды"]
+
+
+def test_one_word_family_is_one_search_word():
+    understood = understand(
+        "покажи все варианты, было два варианта или три вариантов", [], today=TODAY
+    )
+    assert understood.terms == ["варианты"]
+
+
+@pytest.mark.parametrize(
+    ("question", "direction"),
+    [
+        ("покажи все варианты, которые я ему отправлял", "out"),
+        ("я Тимуру ещё отправлял ссылку", "out"),
+        ("what did I send Marta", None),
+        ("the file I sent to Marta", "out"),
+        ("что она мне прислала про забор", "in"),
+        ("она мне отправляла список или я ей", None),
+        ("что мы решили про забор", None),
+    ],
+)
+def test_whose_messages_are_asked_for(question, direction):
+    assert understand(question, CHATS, today=TODAY).direction == direction
 
 
 def test_a_quoted_phrase_is_searched_as_written():
     understood = understand("кто писал «забор до мая» в чате", CHATS, today=TODAY)
-    assert understood.phrase == "забор до мая"
+    assert understood.phrases == ["забор до мая"]
     assert (understood.since, understood.until) == (None, None)
+
+
+def test_a_bot_handle_addresses_the_assistant_and_names_nobody():
+    chats = [_chat("c-helper", "Helper Bot", username="helper_bot"), *CHATS]
+    assert _who("@helper_bot что Марта писала про забор", chats) == ["c-marta"]
+
+
+def test_a_name_heard_as_two_words_is_read_both_ways():
+    chats = [
+        _chat("c-joined", "ZuMio Team", "supergroup"),
+        _chat("c-split", "Zu-Mio: Product Team", "group"),
+    ]
+    assert sorted(_who("что надо подписать по zu mio", chats)) == ["c-joined", "c-split"]
+
+
+def test_what_follows_a_request_to_make_something_is_not_looked_for():
+    understood = understand(
+        "Найди, что Марта писала про забор, и напиши ей коротко, что приеду в пятницу",
+        CHATS,
+        today=TODAY,
+    )
+    assert [chat["id"] for chat in understood.who] == ["c-marta"]
+    assert understood.terms == ["забор"]
+    # "в пятницу" is when to arrive, not when the message was written.
+    assert (understood.since, understood.until) == (None, None)
+    # A request that comes first, or whose lookup names only a person, is read whole.
+    first = understand("Напиши Марте, что решили про забор", CHATS, today=TODAY)
+    assert first.terms == ["забор"]
+    named_only = understand(
+        "Посмотри чат с Мартой и напиши, что решили про забор", CHATS, today=TODAY
+    )
+    assert named_only.terms == ["забор"]
