@@ -1,3 +1,5 @@
+import base64
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -190,6 +192,73 @@ class TestGetChatMessages:
     async def test_messages_chat_not_found(self, auth_client):
         response = await auth_client.get(f"/api/v1/chats/{uuid4()}/messages")
         assert response.status_code == 404
+
+    async def test_a_page_can_start_at_a_known_message(
+        self, auth_client, db_session, test_user
+    ):
+        """The MCP server's recall builds these cursors itself, from a message it found.
+
+        It has no other way to read around a message or before a day. Keep the three
+        fields and their meaning, or change telegram_wai_mcp/recall.py together with them.
+        """
+        chat = TelegramChat(
+            user_id=test_user.id,
+            telegram_chat_id=12345,
+            chat_type=ChatType.PRIVATE,
+            title="Chat with Messages",
+        )
+        db_session.add(chat)
+        await db_session.flush()
+        sent = [
+            datetime(2026, 10, 4, 9, 0, tzinfo=UTC),
+            datetime(2026, 10, 5, 10, 0, tzinfo=UTC),
+            datetime(2026, 10, 5, 10, 1, tzinfo=UTC),
+            datetime(2026, 10, 5, 10, 2, tzinfo=UTC),
+            datetime(2026, 10, 6, 8, 0, tzinfo=UTC),
+        ]
+        for number, sent_at in enumerate(sent, 1):
+            db_session.add(
+                TelegramMessage(
+                    chat_id=chat.id,
+                    telegram_message_id=number,
+                    text=f"Message {number}",
+                    has_media=False,
+                    is_outgoing=False,
+                    sent_at=sent_at,
+                )
+            )
+        await db_session.flush()
+        url = f"/api/v1/chats/{chat.id}/messages"
+
+        def cursor(sent_at, number, message_id="00000000-0000-0000-0000-000000000000"):
+            payload = {
+                "id": message_id,
+                "sent_at": sent_at,
+                "telegram_message_id": number,
+            }
+            raw = json.dumps(payload).encode()
+            return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+        async def numbers(**params):
+            response = await auth_client.get(url, params=params)
+            assert response.status_code == 200
+            return [m["telegram_message_id"] for m in response.json()["messages"]]
+
+        listed = (await auth_client.get(url)).json()["messages"]
+        third = next(m for m in listed if m["telegram_message_id"] == 3)
+        here = cursor(third["sent_at"], 3, third["id"])
+
+        # One number further, with the lowest id: the page starts at the message.
+        assert await numbers(before=cursor(third["sent_at"], 4), limit=2) == [3, 2]
+        assert await numbers(before=here, limit=1) == [2]
+        assert await numbers(after=here, limit=1) == [4]
+        # Midnight with number zero: everything sent before that day.
+        assert await numbers(before=cursor("2026-10-06T00:00:00+00:00", 0)) == [
+            4,
+            3,
+            2,
+            1,
+        ]
 
 
 class TestGetMessageContent:
