@@ -1,3 +1,5 @@
+import json
+
 from starlette.testclient import TestClient
 from telegram_wai_mcp import server as srv
 from telegram_wai_mcp.sse_server import create_app
@@ -189,6 +191,95 @@ def test_initialize_returns_session_id_and_allows_follow_up_requests(monkeypatch
     assert response.status_code == 200
     tool_names = {tool["name"] for tool in response.json()["result"]["tools"]}
     assert "search_messages" in tool_names
+
+
+def test_recall_is_announced_first_and_read_only_over_http(monkeypatch) -> None:
+    monkeypatch.setattr(srv, "TelegramAIClient", FakeTelegramAIClient)
+    srv._session_api_keys.clear()
+
+    with TestClient(create_app()) as client:
+        opened = client.post(
+            "/mcp?key=wai_alpha",
+            headers=_headers(),
+            json={
+                "jsonrpc": "2.0",
+                "id": "init-1",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "pytest", "version": "1.0"},
+                },
+            },
+        )
+        session_id = opened.headers["mcp-session-id"]
+        protocol_version = opened.json()["result"]["protocolVersion"]
+        _send_initialized(client, session_id, protocol_version)
+        listed = client.post(
+            "/mcp",
+            headers=_headers(session_id=session_id, protocol_version=protocol_version),
+            json={"jsonrpc": "2.0", "id": "tools-1", "method": "tools/list", "params": {}},
+        )
+
+    assert "call recall first" in opened.json()["result"]["instructions"]
+    first = listed.json()["result"]["tools"][0]
+    assert first["name"] == "recall"
+    assert first["annotations"] == {"readOnlyHint": True}
+
+
+class FakeArchiveClient(FakeTelegramAIClient):
+    """Enough of the backend for one recall: a chat list, one found message, its chat."""
+
+    async def list_chats(self, **_) -> dict:
+        chat = {"id": "chat-1", "title": "Test Chat", "chat_type": "group"}
+        return {"chats": [{**chat, "total_messages_synced": 40}], "total": 1}
+
+    async def execute_data_tool(self, name: str, arguments: dict | None = None) -> dict:
+        result = await super().execute_data_tool(name, arguments)
+        result["results"][0]["id"] = "message-123"
+        return result
+
+    async def get_messages(self, chat_id: str, limit: int = 50, before=None, after=None) -> dict:
+        return {"messages": []}
+
+
+def test_recall_answers_over_http_with_structured_content(monkeypatch) -> None:
+    monkeypatch.setattr(srv, "TelegramAIClient", FakeArchiveClient)
+    srv._session_api_keys.clear()
+
+    def call(client, session_id, protocol_version, arguments):
+        response = client.post(
+            "/mcp",
+            headers=_headers(session_id=session_id, protocol_version=protocol_version),
+            json={
+                "jsonrpc": "2.0",
+                "id": "call-recall",
+                "method": "tools/call",
+                "params": {"name": "recall", "arguments": arguments},
+            },
+        )
+        assert response.status_code == 200
+        return response.json()["result"]
+
+    with TestClient(create_app()) as client:
+        session_id, protocol_version = _initialize(client, "/mcp?key=wai_alpha")
+        _send_initialized(client, session_id, protocol_version)
+        answer = call(client, session_id, protocol_version, {"question": "presentation"})
+        refused = call(
+            client, session_id, protocol_version, {"question": "presentation", "limit": 50}
+        )
+
+    assert answer["isError"] is False
+    pack = answer["structuredContent"]
+    assert json.loads(answer["content"][0]["text"]) == pack
+    assert [(item["id"], item["date"]) for item in pack["evidence"]] == [
+        ("message-123", "2026-03-10")
+    ]
+    assert pack["evidence"][0]["title"] == "Test Chat · Tester"
+    assert pack["searched"]["chats"] == 1
+    assert pack["searched"]["messages"] == 40
+    assert refused["isError"] is True
+    assert "Input validation error" in refused["content"][0]["text"]
 
 
 def test_invalid_session_id_returns_not_found(monkeypatch) -> None:

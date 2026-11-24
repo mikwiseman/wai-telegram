@@ -12,9 +12,18 @@ from starlette.requests import Request
 
 from telegram_wai_mcp.client import TelegramAIClient
 from telegram_wai_mcp.links import collect_links, validate_domains
+from telegram_wai_mcp.recall import RECALL_TOOL, recall
+
+INSTRUCTIONS = (
+    "This server reads one person's Telegram archive: messages, files, links and voice "
+    "transcripts. For any question about what was written, sent or agreed, call recall "
+    "first. One call returns dated, sourced evidence, newest first, with the tool call that "
+    "opens each piece in its chat. Use search_messages, get_chat_messages, get_files and "
+    "get_links to read further. Send messages and save drafts only when the person asks."
+)
 
 # Initialize MCP server
-server = Server("telegram-wai-mcp")
+server = Server("telegram-wai-mcp", instructions=INSTRUCTIONS)
 MAX_LIMIT = 500
 MAX_LOOKBACK_DAYS = 180
 _session_api_keys: dict[str, str] = {}
@@ -1375,7 +1384,12 @@ async def list_tools() -> list[Tool]:
             },
         )
     )
-    return shared_tools + [tool for tool in legacy_tools if tool.name not in shared_names]
+    # recall comes first: it is the first step for any question about the archive.
+    return [
+        RECALL_TOOL,
+        *shared_tools,
+        *(tool for tool in legacy_tools if tool.name not in shared_names),
+    ]
 
 
 @server.call_tool()
@@ -1389,6 +1403,28 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent] |
         if name == "get_data_status":
             result = await api.execute_data_tool("get_data_status")
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+
+        elif name == "recall":
+            question = _require_str(args, "question")
+            if not 2 <= len(question) <= 1000:
+                raise ValueError('"question" must be 2 to 1000 characters long')
+            limit = _optional_int(args, "limit", default=10, minimum=1, maximum=20)
+            since = _optional_iso_date(args, "since")
+            until = _optional_iso_date(args, "until")
+            if since and until and since > until:
+                raise ValueError('"since" must not be after "until"')
+            result = await recall(
+                api,
+                question=question,
+                limit=limit,
+                since=since,
+                until=until,
+                inventory=_list_all_chats,
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False))],
+                structuredContent=result,
+            )
 
         elif name == "get_inbox":
             result = await api.execute_data_tool("get_inbox", dict(args))

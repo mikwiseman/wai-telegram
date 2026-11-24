@@ -151,11 +151,17 @@ class TelegramAIClient:
         chat_id: str,
         limit: int = 50,
         before: str | None = None,
+        after: str | None = None,
     ) -> dict[str, Any]:
-        """Get messages from a specific chat with cursor pagination."""
+        """Get messages from a specific chat with cursor pagination.
+
+        `before` pages back from a cursor; `after` returns what came next.
+        """
         params: dict[str, Any] = {"limit": limit}
         if before:
             params["before"] = before
+        if after:
+            params["after"] = after
         return await self._request("GET", f"/api/v1/chats/{chat_id}/messages", params=params)
 
     async def get_message_content(
