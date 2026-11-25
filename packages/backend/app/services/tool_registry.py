@@ -59,6 +59,7 @@ from app.services.post_draft_service import (
 )
 from app.services.telegram_links import (
     build_media_download_url,
+    build_telegram_chat_url,
     build_telegram_message_url,
 )
 
@@ -1129,6 +1130,9 @@ async def _get_message(
         "media_cache_stage": str(media_object.stage) if media_object else None,
         "media_cached_bytes": media_object.byte_offset if media_object else 0,
         "media_sha256": media_object.sha256 if media_object else None,
+        "telegram_chat_url": build_telegram_chat_url(
+            chat_type=chat.chat_type, username=chat.username
+        ),
         "telegram_message_url": _telegram_url(message, chat),
         "media_download_url": _download_url(user_id, message, media_object),
         "download_url_expires_at": (
@@ -1392,6 +1396,9 @@ async def _get_message_content(
         else None,
         "media_processing_error_code": message.media_processing_error_code,
         "media_cache_status": str(media_object.status) if media_object else None,
+        "telegram_chat_url": build_telegram_chat_url(
+            chat_type=chat.chat_type, username=chat.username
+        ),
         "telegram_message_url": _telegram_url(message, chat),
         "media_download_url": _download_url(user_id, message, media_object),
         "next_action": next_action,

@@ -194,6 +194,7 @@ class _Found:
     said: str  # the transcript, or the text read out of a file or a picture
     urls: list[str]
     url: str | None
+    chat_url: str | None = None
     # The stretch of its chat it was read in, so its neighbours here are its
     # neighbours there; 0 when only a search found it.
     read: int = 0
@@ -211,6 +212,7 @@ class _Found:
         self.summary = self.summary or other.summary
         self.urls = self.urls or other.urls
         self.url = self.url or other.url
+        self.chat_url = self.chat_url or other.chat_url
 
 
 def _moment(value: Any) -> datetime | None:
@@ -253,6 +255,7 @@ def _found(raw: Any, chat: dict[str, Any] | None = None, **marks: Any) -> _Found
         said=str(raw.get("content_preview") or "").strip() if media else "",
         urls=[url for url, _host in message_urls(raw)],
         url=raw.get("telegram_message_url") or None,
+        chat_url=raw.get("telegram_chat_url") or None,
         **marks,
     )
 
@@ -1159,6 +1162,7 @@ async def _write(
         "text": text,
         "id": found.id,
         "url": found.url,
+        **({"chat_url": found.chat_url} if found.chat_url else {}),
         "open": {
             "tool": "get_chat_messages",
             "args": {"chat_id": found.chat_id, "before": open_at, "limit": OPEN_PAGE},

@@ -50,6 +50,7 @@ class SearchResultItem(BaseModel):
     hidden_urls: list[str] = Field(default_factory=list)
     deleted_at: datetime | None = None
     transcribed_at: datetime | None = None
+    telegram_chat_url: str | None = None
     telegram_message_url: str | None = None
     media_download_url: str | None = None
 

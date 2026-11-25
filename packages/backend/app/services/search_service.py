@@ -21,6 +21,7 @@ from app.services.embedding_service import (
 )
 from app.services.telegram_links import (
     build_media_download_url,
+    build_telegram_chat_url,
     build_telegram_message_url,
 )
 
@@ -140,6 +141,9 @@ def _rows_to_response(
                 hidden_urls=getattr(row, "hidden_urls", None) or [],
                 deleted_at=getattr(row, "deleted_at", None),
                 transcribed_at=row.transcribed_at,
+                telegram_chat_url=build_telegram_chat_url(
+                    chat_type=chat_type, username=row.chat_username
+                ),
                 telegram_message_url=build_telegram_message_url(
                     chat_type=chat_type,
                     telegram_chat_id=row.chat_telegram_id,

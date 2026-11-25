@@ -81,6 +81,25 @@ async def _seed(db_session, test_user):
     return chat, message
 
 
+async def test_get_message_distinguishes_private_chat_from_message_link(
+    db_session, test_user, auth_client
+):
+    chat, message = await _seed(db_session, test_user)
+    chat.chat_type = ChatType.PRIVATE
+    chat.telegram_chat_id = 1234567
+    await db_session.flush()
+    locator = {
+        "chat_id": str(chat.id),
+        "telegram_message_id": message.telegram_message_id,
+    }
+    metadata = await execute_data_tool(db_session, test_user.id, "get_message", locator)
+    page = await auth_client.get(f"/api/v1/chats/{chat.id}/messages")
+    assert page.status_code == 200
+    for result in [metadata, page.json()["messages"][0]]:
+        assert result["telegram_message_url"] is None
+        assert result["telegram_chat_url"] == "https://t.me/tool_chat"
+
+
 async def test_shared_tools_expose_metadata_content_segments_and_download(
     db_session, test_user
 ):
