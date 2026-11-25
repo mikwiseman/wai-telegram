@@ -233,6 +233,8 @@ def format_message_content(
     telegram_message_url = result.get("telegram_message_url")
     if telegram_message_url:
         lines.extend(["", f"Telegram message: {telegram_message_url}"])
+    elif result.get("telegram_chat_url"):
+        lines.extend(["", f"Open chat: {result['telegram_chat_url']}"])
 
     media_download_url = _absolute_url(result.get("media_download_url"), base_url)
     if media_download_url:
@@ -1845,6 +1847,10 @@ def format_inbox(result: dict) -> list[TextContent]:
                 f"Unread={chat.get('unread_count', 0)} | last_sync_at={chat.get('last_sync_at')}",
             ]
         )
+        if chat.get("chat_type") == "private" and (
+            ref := _format_username_ref(chat.get("username"))
+        ):
+            lines.append(f"Chat: {ref}")
         if chat.get("sync_recommended"):
             lines.append(
                 f"Known latest #{chat.get('latest_known_message_id')} is missing: sync_chat for this chat if relevant."
@@ -2087,6 +2093,8 @@ def format_chat_messages(
         links: list[str] = []
         if msg.get("telegram_message_url"):
             links.append(f"Open: {msg['telegram_message_url']}")
+        elif msg.get("telegram_chat_url"):
+            links.append(f"Open chat: {msg['telegram_chat_url']}")
         media_url = _absolute_url(msg.get("media_download_url"), base_url)
         if media_url:
             links.append(f"Download media: {media_url}")

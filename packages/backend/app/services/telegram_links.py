@@ -1,10 +1,21 @@
 import mimetypes
+import re
 from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
 
 from app.models.chat import ChatType
 from app.services.media_access import create_media_download_token
+
+
+def build_telegram_chat_url(
+    *, chat_type: ChatType | str | None, username: str | None
+) -> str | None:
+    """Private peer usernames open the conversation, without a message locator."""
+    handle = (username or "").strip().removeprefix("@")
+    if chat_type == ChatType.PRIVATE and re.fullmatch(r"[A-Za-z0-9_]+", handle):
+        return f"https://t.me/{handle}"
+    return None
 
 
 def build_telegram_message_url(
@@ -15,6 +26,8 @@ def build_telegram_message_url(
     message_id: int | None,
 ) -> str | None:
     """Build the canonical Telegram message URL when Telegram exposes one."""
+    if chat_type not in {ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL}:
+        return None
     if not isinstance(message_id, int) or message_id <= 0:
         return None
 

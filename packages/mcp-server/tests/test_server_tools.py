@@ -75,6 +75,15 @@ def _registry_client():
     return client
 
 
+def test_chat_history_labels_private_chat_destination():
+    result = {
+        "messages": [{"telegram_message_id": 42, "telegram_chat_url": "https://t.me/example"}]
+    }
+    text = server.format_chat_messages(result)[0].text
+    assert "Open chat: https://t.me/example" in text
+    assert "https://t.me/example/42" not in text
+
+
 class TestToolList:
     @pytest.mark.asyncio
     async def test_list_tools_returns_expected_tools(self):

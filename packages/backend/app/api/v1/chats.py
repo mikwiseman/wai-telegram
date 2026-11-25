@@ -46,6 +46,7 @@ from app.services.telegram_client import NoActiveTelegramSessionError
 from app.services.sync_service import sync_chats
 from app.services.telegram_links import (
     build_media_download_url,
+    build_telegram_chat_url,
     build_telegram_message_url,
     media_download_filename,
 )
@@ -382,6 +383,9 @@ async def get_chat_messages(
                 sent_at=msg.sent_at,
                 has_embedding=msg.embedding is not None,
                 transcribed_at=msg.transcribed_at,
+                telegram_chat_url=build_telegram_chat_url(
+                    chat_type=chat.chat_type, username=chat.username
+                ),
                 telegram_message_url=build_telegram_message_url(
                     chat_type=chat.chat_type,
                     telegram_chat_id=chat.telegram_chat_id,
@@ -543,6 +547,9 @@ async def get_message_content(
         media_processed_at=message.media_processed_at,
         content_model=message.content_model,
         summary_model=message.summary_model,
+        telegram_chat_url=build_telegram_chat_url(
+            chat_type=chat.chat_type, username=chat.username
+        ),
         telegram_message_url=build_telegram_message_url(
             chat_type=chat.chat_type,
             telegram_chat_id=chat.telegram_chat_id,
