@@ -666,3 +666,147 @@ async def test_selected_embedding_repair_and_search_never_cross_accounts():
                 await transaction.rollback()
     finally:
         await engine.dispose()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("POSTGRES_CONTRACT_DATABASE_URL"),
+    reason="POSTGRES_CONTRACT_DATABASE_URL is not configured",
+)
+async def test_passage_search_reads_the_index_first_and_checks_each_passage():
+    """The search by meaning takes the nearest passages from the index and checks
+    each one after: a current passage whose message passes the filters is found,
+    one of a stale revision or of a chat no longer indexed is not, and however
+    many of those lie nearer, they never take a found passage's place."""
+    from app.services import search_service
+    from app.services.memory_passages import DIMENSIONS
+
+    def near(distance: float) -> list[float]:
+        vector = [0.0] * DIMENSIONS
+        vector[0], vector[1] = 1.0, distance
+        return vector
+
+    engine = create_async_engine(os.environ["POSTGRES_CONTRACT_DATABASE_URL"])
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    noon = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
+    try:
+        async with sessions() as db:
+            transaction = await db.begin()
+            try:
+                user = User(
+                    email=f"passages-{uuid4()}@example.test",
+                    password_hash="unused",
+                    is_active=True,
+                )
+                db.add(user)
+                await db.flush()
+                indexed, hidden = (
+                    TelegramChat(
+                        user_id=user.id,
+                        telegram_chat_id=number,
+                        chat_type=ChatType.PRIVATE,
+                        title=title,
+                        indexing_enabled=enabled,
+                    )
+                    for number, title, enabled in [
+                        (9_201, "Indexed", True),
+                        (9_202, "Hidden", False),
+                    ]
+                )
+                db.add_all([indexed, hidden])
+                await db.flush()
+                messages = {
+                    name: TelegramMessage(
+                        chat_id=chat.id,
+                        telegram_message_id=number,
+                        text=f"Message {number}",
+                        sent_at=noon - timedelta(days=days_ago),
+                    )
+                    for name, chat, number, days_ago in [
+                        ("today", indexed, 1, 0),
+                        ("yesterday", indexed, 2, 1),
+                        ("stale", indexed, 3, 2),
+                        ("hidden", hidden, 4, 0),
+                    ]
+                }
+                db.add_all(messages.values())
+                await db.flush()
+                # Inserting the messages opened their memory days; prepare them all.
+                await db.execute(
+                    text(
+                        "UPDATE memory_days SET prepared_revision=revision "
+                        "WHERE chat_id IN (:indexed, :hidden)"
+                    ),
+                    {"indexed": indexed.id, "hidden": hidden.id},
+                )
+                # Nearest of all: 110 passages of the chat that is no longer
+                # indexed, more than the 100 candidates the search asks for.
+                placed = [("hidden", 0.001 * i) for i in range(1, 111)]
+                placed += [("stale", 0.5), ("today", 1.0), ("yesterday", 1.2)]
+                await db.execute(
+                    text(
+                        "INSERT INTO memory_passages"
+                        "(id,user_id,chat_id,day,revision,message_ids,text,tokens,embedding) "
+                        "SELECT :id,:user,d.chat_id,d.day,d.revision,"
+                        "ARRAY[CAST(:message AS uuid)],:text,5,"
+                        "CAST(:embedding AS halfvec(3072)) "
+                        "FROM memory_days d WHERE d.chat_id=:chat AND d.day=:day"
+                    ),
+                    [
+                        {
+                            "id": f"contract-{uuid4()}",
+                            "user": user.id,
+                            "chat": messages[name].chat_id,
+                            "day": messages[name].sent_at.date(),
+                            "message": messages[name].id,
+                            "text": f"Passage of {name}",
+                            "embedding": str(near(distance)),
+                        }
+                        for name, distance in placed
+                    ],
+                )
+                # A correction after its day was prepared leaves that passage stale.
+                messages["stale"].text = "Message 3, corrected"
+                await db.flush()
+                # Small tables would be read whole; make Postgres take the index,
+                # as it does on the archive, so its scan must read past the rest.
+                await db.execute(text("SET LOCAL enable_seqscan = off"))
+
+                async def found(**filters):
+                    response = await search_service.semantic_search(
+                        db,
+                        user.id,
+                        SearchRequest(query="nothing written like this", **filters),
+                    )
+                    return [
+                        (item.telegram_message_id, item.content_preview)
+                        for item in response.results
+                    ]
+
+                with (
+                    patch.object(
+                        search_service.settings, "memory_search_enabled", True
+                    ),
+                    patch.object(
+                        search_service,
+                        "generate_memory_query_embedding",
+                        new_callable=AsyncMock,
+                        return_value=near(0.0),
+                    ),
+                ):
+                    assert await found(limit=1) == [(1, "Passage of today")]
+                    assert await found() == [
+                        (1, "Passage of today"),
+                        (2, "Passage of yesterday"),
+                    ]
+                    assert await found(date_from=noon - timedelta(hours=1)) == [
+                        (1, "Passage of today")
+                    ]
+                    assert await found(chat_ids=[indexed.id], date_to=noon) == [
+                        (1, "Passage of today"),
+                        (2, "Passage of yesterday"),
+                    ]
+                    assert await found(chat_ids=[hidden.id]) == []
+            finally:
+                await transaction.rollback()
+    finally:
+        await engine.dispose()

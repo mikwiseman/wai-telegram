@@ -176,7 +176,33 @@ def _rows_to_response(
     )
 
 
-def _hybrid_search_sql(dimensions: int, where_sql: str, *, memory: bool = False):
+def _passage_where_sql(params: dict[str, object]) -> str:
+    """Narrow passages to the caller's chats and days before the index scan.
+
+    A passage holds messages of one chat and one UTC day, so these keep every
+    passage the message filters could keep; the message check still decides.
+    """
+    clauses = ["TRUE"]
+    if "chat_ids" in params:
+        clauses.append("p.chat_id = ANY(CAST(:chat_ids AS uuid[]))")
+    if "date_from" in params:
+        clauses.append(
+            "p.day >= (CAST(:date_from AS timestamptz) AT TIME ZONE 'UTC')::date"
+        )
+    if "date_to" in params:
+        clauses.append(
+            "p.day <= (CAST(:date_to AS timestamptz) AT TIME ZONE 'UTC')::date"
+        )
+    return " AND ".join(clauses)
+
+
+def _hybrid_search_sql(
+    dimensions: int,
+    where_sql: str,
+    *,
+    memory: bool = False,
+    passage_where_sql: str = "TRUE",
+):
     """Build simple-FTS + trigram + pgvector retrieval fused with RRF.
 
     The trigram operator is applied to media_file_name only. Running it against
@@ -187,20 +213,34 @@ def _hybrid_search_sql(dimensions: int, where_sql: str, *, memory: bool = False)
     is still matched by full-text search and by ILIKE, which cost ~35ms each.
     """
     if memory:
+        # The nearest passages come straight from the HNSW index, and the checks
+        # run on each one as the index yields it: they sit in a scalar subquery,
+        # which Postgres never turns into a join. With hnsw.iterative_scan the
+        # index reads on until candidate_limit passages have passed them. Written
+        # as joins, the same checks let the planner read memory_days first and
+        # measure the distance to every passage: 90 seconds for 724,000 of them.
+        # The message check finds messages by id alone. With m.chat_id=p.chat_id
+        # beside it, Postgres also read the chat's whole index entry, 50,000
+        # messages for a busy chat, for each passage. vector_raw below checks the
+        # chosen message against its own chat.
         vector_sql = f"""
         memory_candidates AS (
             SELECT p.message_ids,p.text,
                 1-(p.embedding <=> CAST(:embedding AS halfvec(3072))) AS vector_score
             FROM memory_passages p
-            JOIN memory_days d ON d.chat_id=p.chat_id AND d.day=p.day
-            JOIN telegram_chats c ON c.id=p.chat_id
-            JOIN users u ON u.id=c.user_id
-            WHERE p.embedding IS NOT NULL AND p.user_id=c.user_id
-                AND c.indexing_enabled AND u.is_active
-                AND p.revision=d.revision AND d.prepared_revision=d.revision
-                AND EXISTS (
-                    SELECT 1 FROM telegram_messages m
-                    WHERE m.id=ANY(p.message_ids) AND m.chat_id=p.chat_id AND {where_sql}
+            WHERE p.user_id=:user_id AND p.embedding IS NOT NULL
+                AND {passage_where_sql}
+                AND (
+                    SELECT true FROM memory_days d
+                    JOIN telegram_chats c ON c.id=d.chat_id
+                    JOIN users u ON u.id=c.user_id
+                    WHERE d.chat_id=p.chat_id AND d.day=p.day
+                        AND p.revision=d.revision AND d.prepared_revision=d.revision
+                        AND p.user_id=c.user_id AND c.indexing_enabled AND u.is_active
+                        AND EXISTS (
+                            SELECT 1 FROM telegram_messages m
+                            WHERE m.id=ANY(p.message_ids) AND {where_sql}
+                        )
                 )
             ORDER BY p.embedding <=> CAST(:embedding AS halfvec(3072))
             LIMIT :candidate_limit
@@ -521,10 +561,23 @@ async def semantic_search(
         settings.embedding_dimensions,
         where_sql,
         memory=settings.memory_search_enabled,
+        passage_where_sql=_passage_where_sql(params),
     )
     try:
         await db.execute(text("SET LOCAL hnsw.iterative_scan = 'strict_order'"))
         await db.execute(text("SET LOCAL pg_trgm.similarity_threshold = 0.2"))
+        # The planner's cost for this query passes jit_above_cost, and compiling
+        # it took 170 ms of every search, on a query that runs for 100 ms warm.
+        await db.execute(text("SET LOCAL jit = off"))
+        if settings.memory_search_enabled:
+            # One pass over the passage index collects every candidate asked for.
+            # At the default of 40 the scan restarted again and again, and for
+            # some questions touched 26,000 pages of a 6 GB index where one pass
+            # touches 8,000. pgvector allows at most 1,000.
+            await db.execute(
+                text("SELECT set_config('hnsw.ef_search', :ef_search, true)"),
+                {"ef_search": str(min(int(params["candidate_limit"]), 1000))},
+            )
         result = await db.execute(sql, params)
     except Exception as exc:
         logger.exception(
