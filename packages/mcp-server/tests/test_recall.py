@@ -499,6 +499,43 @@ async def test_the_window_limits_every_search():
     ]
 
 
+async def test_a_window_with_no_end_runs_to_today():
+    messages = [
+        _msg("c-dacha", 1, "2026-03-02", "Ограду ставили весной."),
+        _msg("c-dacha", 2, "2026-10-12", "Ограду чинили осенью."),
+    ]
+    api = FakeArchive(CHATS, messages)
+    api.by_meaning = [message["id"] for message in messages]
+    result = await _recall(api, "что решили про забор", since=date(2026, 9, 1))
+    searches = [arguments for name, arguments in api.calls if name == "search_messages"]
+    # Twelve weeks, whether or not the end is given: asked with its start alone the
+    # search by meaning takes longer than recall waits, so it is asked without the
+    # window and what falls before the start is dropped here.
+    assert [arguments for arguments in searches if arguments["mode"] == "hybrid"] == [
+        {"query": "что решили про забор", "mode": "hybrid", "limit": 15}
+    ]
+    assert [item["id"] for item in result["evidence"]] == ["m-c-dacha-2"]
+    by_wording = [arguments for arguments in searches if arguments["mode"] == "exact"]
+    assert by_wording
+    for arguments in by_wording:
+        assert arguments["date_from"] == "2026-09-01T00:00:00+00:00"
+        assert "date_to" not in arguments
+
+
+async def test_a_few_days_with_no_end_are_still_asked_for_by_date():
+    api = _fence_archive()
+    await _recall(api, "что решили про забор", since=date(2026, 11, 20))
+    searches = [arguments for name, arguments in api.calls if name == "search_messages"]
+    assert [arguments for arguments in searches if arguments["mode"] == "hybrid"] == [
+        {
+            "query": "что решили про забор",
+            "mode": "hybrid",
+            "limit": 15,
+            "date_from": "2026-11-20T00:00:00+00:00",
+        }
+    ]
+
+
 async def test_text_stays_inside_the_budget():
     long_text = "Забор. " + "Очень длинное сообщение про краску и доски. " * 60
     messages = [

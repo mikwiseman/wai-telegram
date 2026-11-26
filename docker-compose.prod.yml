@@ -14,7 +14,8 @@ services:
     # default is too small for ANALYZE on telegram_messages, which fails with
     # "could not resize shared memory segment" and leaves autovacuum unable to run.
     shm_size: 512mb
-    # One user, and every service pools at most 30 connections, so the default
+    # One user, and every process pools at most 15 connections, sized to fit
+    # the 50 below (app/core/database.py), so the default
     # 100 x 16MB of work_mem is headroom nobody uses - and it is exactly what
     # tips this container over during a full pg_dump, which pulls an 8.8GB table
     # through a page cache the cgroup counts against the same limit.

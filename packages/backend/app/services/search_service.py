@@ -371,8 +371,22 @@ def _hybrid_search_sql(dimensions: int, where_sql: str, *, memory: bool = False)
     """)
 
 
+# How much of a document's own text the index on telegram_messages covers: the
+# search_vector trigger (migration 020) reads this many characters of it.
+_INDEXED_CONTENT_CHARS = 30000
+
+
 def _exact_search_sql(where_sql: str):
-    """Build indexed candidate retrieval with literal phrase verification."""
+    """Build indexed candidate retrieval with literal phrase verification.
+
+    A message is verified against the part of its document text that the index
+    covers, not against all of it. The index finds a message by the first
+    30,000 characters of that text, and the rest is searched chunk by chunk
+    below. Reading every candidate's whole text, once to filter and once to
+    score, put 180 MB through ILIKE for one common word (one document alone
+    holds 134 million characters) and took 7 seconds where this takes under one.
+    """
+    content = f"left(coalesce(m.content_text, ''), {_INDEXED_CONTENT_CHARS})"
     return text(f"""
         WITH search_query AS (
             SELECT plainto_tsquery('simple', :query) AS tsq
@@ -385,7 +399,7 @@ def _exact_search_sql(where_sql: str):
                         THEN 1.0 ELSE 0 END,
                     CASE WHEN coalesce(m.content_summary, '') ILIKE :query_pattern ESCAPE '\\'
                         THEN 0.95 ELSE 0 END,
-                    CASE WHEN coalesce(m.content_text, '') ILIKE :query_pattern ESCAPE '\\'
+                    CASE WHEN {content} ILIKE :query_pattern ESCAPE '\\'
                         THEN 0.9 ELSE 0 END,
                     CASE WHEN coalesce(m.sender_name, '') ILIKE :query_pattern ESCAPE '\\'
                         THEN 0.85 ELSE 0 END,
@@ -403,7 +417,7 @@ def _exact_search_sql(where_sql: str):
               AND (
                 coalesce(m.text, '') ILIKE :query_pattern ESCAPE '\\'
                 OR coalesce(m.content_summary, '') ILIKE :query_pattern ESCAPE '\\'
-                OR coalesce(m.content_text, '') ILIKE :query_pattern ESCAPE '\\'
+                OR {content} ILIKE :query_pattern ESCAPE '\\'
                 OR coalesce(m.sender_name, '') ILIKE :query_pattern ESCAPE '\\'
                 OR coalesce(m.media_file_name, '') ILIKE :query_pattern ESCAPE '\\'
                 OR coalesce(m.searchable_metadata, '') ILIKE :query_pattern ESCAPE '\\'

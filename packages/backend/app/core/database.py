@@ -34,12 +34,18 @@ class _SessionFactoryProxy:
 
 
 def _create_engine() -> AsyncEngine:
+    # The API, the listener and the Celery workers each pool here, against one
+    # Postgres that takes 47 connections (max_connections=50 in
+    # docker-compose.prod.yml, three of them reserved). With an overflow of 20
+    # the API could ask for 30 while the others held 25, and Postgres refused
+    # the rest with "too many clients already" as soon as three callers
+    # searched at once. Past 15 a request now waits for a connection instead.
     return create_async_engine(
         settings.async_database_url,
         echo=settings.debug,
         pool_pre_ping=True,
         pool_size=10,
-        max_overflow=20,
+        max_overflow=5,
     )
 
 
