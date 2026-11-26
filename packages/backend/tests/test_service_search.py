@@ -287,6 +287,9 @@ class TestSemanticSearch:
         assert str(mock_db.execute.await_args_list[1].args[0]) == (
             "SET LOCAL pg_trgm.similarity_threshold = 0.2"
         )
+        assert str(mock_db.execute.await_args_list[2].args[0]) == (
+            "SET LOCAL jit = off"
+        )
         assert "message_content_chunks" in sql_text
         assert "FULL OUTER JOIN vector_ranked" in sql_text
         assert ":rrf_k" in sql_text
