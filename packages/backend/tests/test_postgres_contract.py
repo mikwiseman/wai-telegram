@@ -463,6 +463,98 @@ async def test_hybrid_search_uses_fts_trigram_and_pgvector_after_migrations():
     not os.environ.get("POSTGRES_CONTRACT_DATABASE_URL"),
     reason="POSTGRES_CONTRACT_DATABASE_URL is not configured",
 )
+async def test_exact_search_reads_a_long_document_by_its_start_and_its_chunks():
+    """The wording search checks the indexed start of a document's text, never
+    all of it: what lies deeper is found in the document's chunks."""
+    engine = create_async_engine(os.environ["POSTGRES_CONTRACT_DATABASE_URL"])
+    session_factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    user_id = uuid4()
+    opening = "The keeper wrote about a lighthouse in the harbour ledger."
+    closing = "Ask the lighthouse keeper for the tide tables."
+    # Both words are in the indexed start; side by side they stand only past it.
+    document = opening + " filler" * 10_000 + " " + closing
+
+    try:
+        async with session_factory() as db:
+            user = User(
+                id=user_id,
+                email=f"postgres-contract-{user_id}@example.com",
+                password_hash="not-used",
+                is_active=False,
+            )
+            chat = TelegramChat(
+                user_id=user_id,
+                telegram_chat_id=9_101,
+                chat_type=ChatType.PRIVATE,
+                title="Postgres contract",
+                indexing_enabled=True,
+            )
+            db.add_all([user, chat])
+            await db.flush()
+            chunked = TelegramMessage(
+                chat_id=chat.id,
+                telegram_message_id=9_102,
+                has_media=True,
+                media_type="document",
+                media_file_name="ledger.pdf",
+                content_text=document,
+                sent_at=datetime.now(UTC),
+            )
+            unchunked = TelegramMessage(
+                chat_id=chat.id,
+                telegram_message_id=9_103,
+                has_media=True,
+                media_type="document",
+                media_file_name="note.pdf",
+                content_text="A short note from the harbour office.",
+                sent_at=datetime.now(UTC) - timedelta(minutes=1),
+            )
+            db.add_all([chunked, unchunked])
+            await db.flush()
+            db.add_all(
+                [
+                    MessageContentChunk(
+                        message_id=chunked.id, chunk_index=0, text=opening
+                    ),
+                    MessageContentChunk(
+                        message_id=chunked.id, chunk_index=1, text=closing
+                    ),
+                ]
+            )
+            await db.flush()
+
+            async def exact(query: str):
+                response = await semantic_search(
+                    db, user_id, SearchRequest(query=query, mode="exact")
+                )
+                return [
+                    (item.telegram_message_id, item.similarity, item.content_preview)
+                    for item in response.results
+                ]
+
+            # A word in the start of the text: found on the message itself,
+            # whether or not the document has chunks.
+            assert [(number, score) for number, score, _ in await exact("harbour")] == [
+                (9_102, 0.9),
+                (9_103, 0.9),
+            ]
+            # A phrase deep in the text: found in its chunk, and shown by it.
+            assert await exact("lighthouse keeper") == [(9_102, 0.9, closing)]
+            # Words that never stand side by side are not a phrase.
+            assert await exact("harbour keeper") == []
+            await db.rollback()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("POSTGRES_CONTRACT_DATABASE_URL"),
+    reason="POSTGRES_CONTRACT_DATABASE_URL is not configured",
+)
 async def test_postgres_allows_invited_accounts_and_enforces_media_integrity():
     engine = create_async_engine(os.environ["POSTGRES_CONTRACT_DATABASE_URL"])
     session_factory = async_sessionmaker(

@@ -660,7 +660,10 @@ def _plan(
 
     whole_archive = has_subject or not named
     if whole_archive:
-        if narrow or days is None:
+        # A window with a start and no end runs to today. Asked for with its
+        # start alone, a month took the search by meaning six seconds, every time.
+        span = ((until or today) - since).days + 1 if since else None
+        if span is None or span <= NARROW_DAYS:
             # Unfiltered, or filtered to a few days: both quick.
             parts.append(
                 _search(
